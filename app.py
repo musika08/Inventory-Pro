@@ -190,13 +190,11 @@ elif page == "Database":
     ed = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic")
     if len(ed) < len(db_df):
         if st.session_state.user == "Musika":
-            # Finding which item was removed
             removed_items = set(db_df["Product Name"]) - set(ed["Product Name"])
             msg = f"Deleted items from Database: {', '.join(removed_items)}" if removed_items else "Deleted a database row."
             save_data(ed, DB_FILE); log_action(msg); st.rerun()
         else: st.warning("Staff cannot delete database rows."); st.rerun()
     elif not ed.equals(db_df):
-        # Finding which item was added or changed
         new_items = set(ed["Product Name"]) - set(db_df["Product Name"])
         msg = f"Added/Updated Database products: {', '.join(new_items)}" if new_items else "Modified Product Details (Price/Cost) in Database."
         save_data(ed, DB_FILE); log_action(msg); st.rerun()
@@ -249,12 +247,13 @@ elif page == "Sales":
     for col in num_cols:
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
 
-    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_v3")
+    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_v4")
     
     if not ed.equals(sales_df):
         ndf = ed.copy()
         needs_rerun = False
         
+        # Deletion logic
         if len(ed) < len(st.session_state.sales):
             if st.session_state.user == "Musika":
                 save_data(ndf, SALES_FILE); st.session_state.sales = ndf
@@ -266,27 +265,36 @@ elif page == "Sales":
             row = ndf.loc[idx]
             old_row = st.session_state.sales.loc[idx] if idx in st.session_state.sales.index else None
             
-            # Detailed Logging for Sales Changes
-            if old_row is None or any(row[c] != old_row[c] for c in ["Product", "Price Tier", "Qty", "Discount", "Status", "Payment", "Customer"]):
-                prod, tier = row["Product"], row["Price Tier"]
-                if prod and tier:
-                    match = db_df[db_df["Product Name"] == prod]
-                    if not match.empty:
-                        u_cost = float(match["Cost per Unit"].values[0])
-                        b_cost = float(match["Boxed Cost"].values[0])
-                        unit_price = float(match[tier].values[0]) if str(tier) in match.columns else 0.0
-                        
-                        qty, disc = float(row["Qty"]), float(row["Discount"])
-                        ndf.at[idx, "Cost"], ndf.at[idx, "Boxed Cost"] = u_cost, b_cost
-                        total_amount = (unit_price - disc) * qty
-                        ndf.at[idx, "Total"], ndf.at[idx, "Profit"] = total_amount, total_amount - (b_cost * qty)
-                        
-                        # LOG THE DETAIL
-                        detail_msg = (f"Sales Update: Cust: {row['Customer']}, Item: {prod}, Tier: {tier}, "
-                                      f"Qty: {qty}, Disc: ₱{disc}, Total: ₱{total_amount}, "
-                                      f"Status: {row['Status']}, Payment: {row['Payment']}")
-                        log_action(detail_msg)
+            prod, tier = row["Product"], row["Price Tier"]
+            
+            # MATH CALCULATION (Total/Profit) logic
+            if prod and tier:
+                match = db_df[db_df["Product Name"] == prod]
+                if not match.empty:
+                    u_cost = float(match["Cost per Unit"].values[0])
+                    b_cost = float(match["Boxed Cost"].values[0])
+                    unit_price = float(match[tier].values[0]) if str(tier) in match.columns else 0.0
+                    
+                    qty = float(row["Qty"]) if row["Qty"] != 0 else 1.0
+                    disc = float(row["Discount"])
+                    
+                    calc_total = (unit_price - disc) * qty
+                    calc_profit = calc_total - (b_cost * qty)
+                    
+                    # Update row immediately if different from current
+                    if row["Total"] != calc_total or row["Profit"] != calc_profit:
+                        ndf.at[idx, "Cost"] = u_cost
+                        ndf.at[idx, "Boxed Cost"] = b_cost
+                        ndf.at[idx, "Total"] = calc_total
+                        ndf.at[idx, "Profit"] = calc_profit
                         needs_rerun = True
+
+            # Logging trigger for any core data change
+            if old_row is None or any(row[c] != old_row[c] for c in ["Product", "Price Tier", "Qty", "Status", "Payment", "Customer"]):
+                detail_msg = (f"Sales Update: Cust: {row['Customer']}, Item: {row['Product']}, Tier: {row['Price Tier']}, "
+                              f"Qty: {row['Qty']}, Total: ₱{ndf.at[idx, 'Total']:,.2f}, Status: {row['Status']}, Payment: {row['Payment']}")
+                log_action(detail_msg)
+                needs_rerun = True
 
             # Stock Deduction
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
@@ -346,15 +354,11 @@ elif page == "Admin" and st.session_state.role == "Admin":
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
     log_data_df = load_data(LOG_FILE, {"Timestamp":[], "Identity":[], "Action Detail":[]})
-    
-    # Configure widths: Identity is short, Action Detail is wide
     log_conf = {
         "Timestamp": st.column_config.TextColumn("Time", width="medium"),
         "Identity": st.column_config.TextColumn("User", width="small"),
         "Action Detail": st.column_config.TextColumn("Details", width="large")
     }
-    
     st.dataframe(log_data_df, use_container_width=True, hide_index=True, column_config=log_conf)
-    
     if st.session_state.role == "Admin" and st.button("🗑️ Clear Logs"):
         save_data(pd.DataFrame(columns=["Timestamp", "Identity", "Action Detail"]), LOG_FILE); log_action("Admin cleared all activity logs."); st.rerun()
