@@ -221,7 +221,7 @@ elif page == "Inventory":
         st.write("### ⚙️ Add Stock Entry")
         f = st.columns([1.2, 1, 1, 1, 0.5])
         c_date, np, nq, ns = f[0].date_input("Date"), f[1].selectbox("Product", product_list), f[2].number_input("Qty", min_value=1), f[3].selectbox("Status", ["In Stock", "Bought"])
-        if f[4].button("➕"):
+        if f[4].button("➕", key="inv_add_btn"):
             nr = pd.DataFrame({"Product Name": [np], "Quantity": [nq], "Status": [ns], "Date": [c_date]})
             st.session_state.stock = pd.concat([st.session_state.stock, nr], ignore_index=True); save_data(st.session_state.stock, STOCK_FILE)
             log_action(f"Stocked: {nq} of '{np}'"); st.rerun()
@@ -255,7 +255,7 @@ elif page == "Sales":
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
     sales_df["Date"] = pd.to_datetime(sales_df["Date"], errors='coerce').dt.date.fillna(date.today())
 
-    ed = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v9")
+    ed = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v10")
     if not ed.equals(sales_df):
         ndf = ed.copy()
         needs_rerun = False
@@ -306,14 +306,16 @@ elif page == "Expenditures":
         st.write("### ➖ Log Expense")
         f_ex = st.columns([1.2, 1.5, 1, 0.4])
         ex_d, it, ct = f_ex[0].date_input("Date", key="exd"), f_ex[1].text_input("Item", key="exit"), f_ex[2].number_input("Cost", min_value=0.0, key="exct")
-        if f_ex[3].button("➕"):
+        # Added unique key to prevent Duplicate ID error
+        if f_ex[3].button("➕", key="ex_add_btn"):
             new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
             st.session_state.expenditures = pd.concat([st.session_state.expenditures, new]); save_data(st.session_state.expenditures, EXPENSE_FILE); log_action(f"Expense: {it}"); st.rerun()
     with c2:
         st.write("### ➕ Log Deposit")
         f_in = st.columns([1.2, 1.5, 1, 0.4])
         in_d, src, amt = f_in[0].date_input("Date", key="ind"), f_in[1].text_input("Source", key="insrc"), f_in[2].number_input("Amt", min_value=0.0, key="inamt")
-        if f_in[3].button("➕"):
+        # Added unique key to prevent Duplicate ID error
+        if f_in[3].button("➕", key="dep_add_btn"):
             new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
             st.session_state.cash_in = pd.concat([st.session_state.cash_in, new]); save_data(st.session_state.cash_in, CASH_FILE); log_action(f"Deposit: {src}"); st.rerun()
     st.write("---")
@@ -338,16 +340,9 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 c1, c2, c3 = st.columns([2, 1, 1])
                 c1.write(f"Account Request: **{row['Username']}**")
                 if c2.button(f"Approve", key=f"app_{row['Username']}"):
-                    users_df.at[idx, 'Status'] = "Approved"
-                    save_data(users_df, USERS_FILE)
-                    log_action(f"Approved account for: {row['Username']}")
-                    st.rerun()
+                    users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE); log_action(f"Approved {row['Username']}"); st.rerun()
                 if c3.button(f"Reject", key=f"rej_{row['Username']}"):
-                    # Remove the row entirely from the dataframe
-                    users_df = users_df.drop(idx)
-                    save_data(users_df, USERS_FILE)
-                    log_action(f"Rejected and deleted request for: {row['Username']}")
-                    st.rerun()
+                    users_df = users_df.drop(idx); save_data(users_df, USERS_FILE); log_action(f"Rejected {row['Username']}"); st.rerun()
 
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
