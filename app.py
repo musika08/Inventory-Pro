@@ -9,6 +9,7 @@ import extra_streamlit_components as stx
 # --- PRE-FLIGHT CHECK ---
 try:
     import plotly.express as px
+    import plotly.graph_objects as go
 except ImportError:
     st.error("Missing dependency: Plotly. Run 'pip install plotly'")
     st.stop()
@@ -160,20 +161,42 @@ if page == "Dashboard":
         s_m = f2.selectbox("Month", ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], index=date.today().month-1)
     
     m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
+    
+    # Filtered Monthly Data
     fs_monthly = dash_sales[(dash_sales["Date"].dt.year == s_y) & (dash_sales["Date"].dt.month == m_idx)]
     paid_monthly = fs_monthly[fs_monthly['Payment'] == 'Paid']
-    unpaid_monthly = fs_monthly[fs_monthly['Payment'] == 'Unpaid']
-    total_paid_profit = dash_sales[dash_sales['Payment'] == 'Paid']['Profit'].sum()
-    total_deposits = st.session_state.cash_in['Amount'].sum()
-    total_expenses = st.session_state.expenditures['Cost'].sum()
-    net_cash = (total_deposits + total_paid_profit) - total_expenses
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Net Money", f"₱{net_cash:,.2f}")
-    m2.metric("Monthly Paid Profit", f"₱{paid_monthly['Profit'].sum():,.2f}")
-    m3.metric("Monthly Paid Revenue", f"₱{paid_monthly['Total'].sum():,.2f}")
-    m4.metric("Monthly Unpaid Balance", f"₱{unpaid_monthly['Total'].sum():,.2f}")
     
+    # Monthly Expenditures
+    exp_df = st.session_state.expenditures.copy()
+    exp_df["Date"] = pd.to_datetime(exp_df["Date"], errors='coerce')
+    monthly_exp = exp_df[(exp_df["Date"].dt.year == s_y) & (exp_df["Date"].dt.month == m_idx)]['Cost'].sum()
+    
+    # Advanced Calculations
+    rev = paid_monthly['Total'].sum()
+    prof = paid_monthly['Profit'].sum()
+    margin = (prof / rev * 100) if rev > 0 else 0
+    exp_ratio = (monthly_exp / rev * 100) if rev > 0 else 0
+
+    # Metric Row 1
+    m1, m2, m3, m4 = st.columns(4)
+    total_paid_profit = dash_sales[dash_sales['Payment'] == 'Paid']['Profit'].sum()
+    net_cash = (st.session_state.cash_in['Amount'].sum() + total_paid_profit) - st.session_state.expenditures['Cost'].sum()
+    
+    m1.metric("Total Net Money", f"₱{net_cash:,.2f}")
+    m2.metric("Monthly Paid Profit", f"₱{prof:,.2f}")
+    m3.metric("Monthly Paid Revenue", f"₱{rev:,.2f}")
+    m4.metric("Unpaid Balance (Month)", f"₱{fs_monthly[fs_monthly['Payment']=='Unpaid']['Total'].sum():,.2f}")
+
+    # Advanced Analytic Metrics Row
+    st.write("---")
+    st.write("### 🎯 Profit & ROI Analytics")
+    a1, a2, a3 = st.columns(3)
+    a1.metric("Profit Margin %", f"{margin:.1f}%", help="Percentage of revenue that is profit.")
+    a2.metric("Monthly Expenses", f"₱{monthly_exp:,.2f}")
+    a3.metric("Expense-to-Income Ratio", f"{exp_ratio:.1f}%", delta=f"{exp_ratio:.1f}%", delta_color="inverse", help="What % of revenue is spent on expenses.")
+
+    
+
     st.write("---")
     c1, c2 = st.columns(2)
     with c1:
@@ -185,18 +208,6 @@ if page == "Dashboard":
         st.write("### 🏆 Top Sellers (Paid)")
         if not paid_monthly.empty: 
             st.table(paid_monthly.groupby("Product")["Qty"].sum().sort_values(ascending=False).head(5))
-
-    st.write("### 📈 Paid Cash Flow Trend")
-    p = dash_sales[dash_sales['Payment'] == 'Paid'][['Date', 'Profit']].rename(columns={'Profit': 'A'})
-    d = st.session_state.cash_in[['Date', 'Amount']].rename(columns={'Amount': 'A'})
-    e = st.session_state.expenditures[['Date', 'Cost']].rename(columns={'Cost': 'A'})
-    if not e.empty: e['A'] = -e['A']
-    t_df = pd.concat([p, d, e])
-    if not t_df.empty:
-        t_df['Date'] = pd.to_datetime(t_df['Date'], errors='coerce')
-        t_df = t_df.dropna(subset=['Date']).sort_values('Date').groupby('Date').sum().reset_index()
-        t_df['Cum'] = t_df['A'].cumsum()
-        st.plotly_chart(px.line(t_df, x='Date', y='Cum', template="plotly_dark", markers=True), use_container_width=True)
 
 elif page == "Database":
     st.markdown("<h1>📂 Database</h1>", unsafe_allow_html=True)
@@ -216,7 +227,6 @@ elif page == "Database":
     
     ed = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic")
     if len(ed) < len(db_df):
-        # Identify removed row
         removed_mask = ~db_df.index.isin(ed.index)
         removed_row = db_df[removed_mask].iloc[0]
         if st.session_state.role == "Admin":
@@ -275,9 +285,8 @@ elif page == "Sales":
         sales_df[col] = sales_df[col].astype(str).replace(['nan', 'None', ''], '')
     for col in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
-    sales_df["Date"] = pd.to_datetime(sales_df["Date"], errors='coerce').dt.date.fillna(date.today())
-
-    ed = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v11")
+    
+    ed = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v12")
     if not ed.equals(sales_df):
         ndf = ed.copy()
         needs_rerun = False
@@ -373,7 +382,6 @@ elif page == "Expenditures":
 
 elif page == "Admin" and st.session_state.role == "Admin":
     st.markdown("<h1>🛡️ Admin Control Panel</h1>", unsafe_allow_html=True)
-    
     t1, t2, t3 = st.tabs(["User Requests", "User Management (Roles)", "Pending Deletions"])
     
     with t1:
@@ -413,13 +421,9 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 st.code(row['Details'])
                 c1, c2 = st.columns(2)
                 if c1.button("Confirm Deletion", key=f"conf_del_{idx}"):
-                    # Deletion already happened in view, we just clear the request here
-                    # To be truly safe, Admin should be the one clicking the actual delete.
-                    # This logic assumes the staff 'hid' it and admin confirms.
                     del_reqs = del_reqs.drop(idx); save_data(del_reqs, APPROVAL_FILE)
                     log_action(f"Admin confirmed deletion request from {row['Page']}"); st.rerun()
                 if c2.button("Restore / Reject Deletion", key=f"rest_{idx}"):
-                    # Logic to put data back would go here
                     del_reqs = del_reqs.drop(idx); save_data(del_reqs, APPROVAL_FILE)
                     log_action(f"Admin rejected deletion request."); st.rerun()
 
