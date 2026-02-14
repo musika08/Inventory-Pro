@@ -16,6 +16,11 @@ except ImportError:
     st.error("Missing dependency: Plotly. Run 'pip install plotly'")
     st.stop()
 
+try:
+    import xlsxwriter
+except ImportError:
+    st.warning("Excel export is disabled. Run 'pip install xlsxwriter' to enable backups.")
+
 # --- CONFIG & COMPACT CSS ---
 st.set_page_config(page_title="Inventory Pro", layout="wide")
 
@@ -57,7 +62,7 @@ def sync_to_google(df, sheet_name):
         payload = {"sheet": sheet_name, "data": data}
         requests.post(GSHEET_API_URL, json=payload, timeout=5)
     except:
-        pass # Prevents app crash if API is unreachable
+        pass 
 
 # --- SECURITY & COOKIE HELPERS ---
 def make_hashes(password): return hashlib.sha256(str.encode(password)).hexdigest()
@@ -300,7 +305,7 @@ elif page == "Sales":
     for c in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
         view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
 
-    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_editor_v24", height=600)
+    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_editor_v25", height=600)
     
     if not ed_sales.equals(view):
         ndf = ed_sales.copy()
@@ -402,11 +407,14 @@ elif page == "Admin" and st.session_state.role == "Admin":
         c1, c2 = st.columns(2)
         with c1:
             st.write("#### Export Backup")
-            all_data = {"Inventory": st.session_state.inventory, "Stock": st.session_state.stock, "Sales": st.session_state.sales, "Expenditures": st.session_state.expenditures, "CashIn": st.session_state.cash_in, "Users": users_df}
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                for name, df in all_data.items(): df.to_excel(writer, sheet_name=name, index=False)
-            st.download_button(label="📥 Download Excel Backup", data=output.getvalue(), file_name=f"Backup_{date.today()}.xlsx")
+            try:
+                all_data = {"Inventory": st.session_state.inventory, "Stock": st.session_state.stock, "Sales": st.session_state.sales, "Expenditures": st.session_state.expenditures, "CashIn": st.session_state.cash_in, "Users": users_df}
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    for name, df in all_data.items(): df.to_excel(writer, sheet_name=name, index=False)
+                st.download_button(label="📥 Download Excel Backup", data=output.getvalue(), file_name=f"Backup_{date.today()}.xlsx")
+            except:
+                st.error("Backups are disabled until 'xlsxwriter' is installed.")
         with c2:
             st.write("#### Import / Restore")
             uploaded_file = st.file_uploader("Upload Excel Backup", type="xlsx")
