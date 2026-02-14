@@ -145,7 +145,6 @@ if page == "Dashboard":
     
     m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
     
-    # Filter for Dashboard: Only count PAID sales for Revenue/Profit metrics
     fs = st.session_state.sales.copy(); fs["Date"] = pd.to_datetime(fs["Date"])
     paid_sales = fs[fs['Payment'] == 'Paid']
     unpaid_sales = fs[fs['Payment'] == 'Unpaid']
@@ -158,7 +157,6 @@ if page == "Dashboard":
         paid_monthly = pd.DataFrame()
         unpaid_monthly = pd.DataFrame()
     
-    # Cash Calculation: Only include PAID sales profit
     total_paid_profit = paid_sales['Profit'].sum() if not paid_sales.empty else 0
     total_deposits = st.session_state.cash_in['Amount'].sum()
     total_expenses = st.session_state.expenditures['Cost'].sum()
@@ -265,7 +263,7 @@ elif page == "Sales":
     for col in num_cols:
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
 
-    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_v5")
+    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_v6")
     
     if not ed.equals(sales_df):
         ndf = ed.copy()
@@ -307,19 +305,22 @@ elif page == "Sales":
 
             # Logging & State Changes
             if old_row is None or any(row[c] != old_row[c] for c in ["Product", "Price Tier", "Qty", "Status", "Payment", "Customer"]):
-                log_detail = (f"Sales Update: {row['Customer']} | {row['Product']} | {row['Status']} | {row['Payment']} | Total: ₱{ndf.at[idx, 'Total']:,.2f}")
+                # SAFE LOGGING: Ensure total is treated as a float before formatting
+                try:
+                    total_val = float(ndf.at[idx, "Total"])
+                except:
+                    total_val = 0.0
+                
+                log_detail = (f"Sales Update: {row['Customer']} | {row['Product']} | {row['Status']} | {row['Payment']} | Total: ₱{total_val:,.2f}")
                 log_action(log_detail)
                 needs_rerun = True
 
             # AUTOMATIC INVENTORY SUBTRACTION
-            # Trigger: Status changed to 'Sold' from anything else
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
                 s_df = st.session_state.stock.copy()
                 needed = int(row["Qty"])
-                # Filter for in-stock items of this product
                 mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
                 available_indices = s_df[mask].index
-                
                 total_in_stock = s_df.loc[available_indices, "Quantity"].sum()
                 
                 if total_in_stock >= needed:
