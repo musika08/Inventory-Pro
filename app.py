@@ -144,14 +144,31 @@ if page == "Dashboard":
         s_y, s_m = f1.selectbox("Year", y_list), f2.selectbox("Month", ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], index=date.today().month-1)
     
     m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
-    fs = st.session_state.sales.copy(); fs["Date"] = pd.to_datetime(fs["Date"])
-    if not fs.empty:
-        fs = fs[(fs["Date"].dt.year == s_y) & (fs["Date"].dt.month == m_idx)]
     
-    cash = (st.session_state.cash_in['Amount'].sum() + st.session_state.sales['Profit'].sum()) - st.session_state.expenditures['Cost'].sum()
+    # Filter for Dashboard: Only count PAID sales for Revenue/Profit metrics
+    fs = st.session_state.sales.copy(); fs["Date"] = pd.to_datetime(fs["Date"])
+    paid_sales = fs[fs['Payment'] == 'Paid']
+    unpaid_sales = fs[fs['Payment'] == 'Unpaid']
+
+    if not fs.empty:
+        fs_monthly = fs[(fs["Date"].dt.year == s_y) & (fs["Date"].dt.month == m_idx)]
+        paid_monthly = fs_monthly[fs_monthly['Payment'] == 'Paid']
+        unpaid_monthly = fs_monthly[fs_monthly['Payment'] == 'Unpaid']
+    else:
+        paid_monthly = pd.DataFrame()
+        unpaid_monthly = pd.DataFrame()
+    
+    # Cash Calculation: Only include PAID sales profit
+    total_paid_profit = paid_sales['Profit'].sum() if not paid_sales.empty else 0
+    total_deposits = st.session_state.cash_in['Amount'].sum()
+    total_expenses = st.session_state.expenditures['Cost'].sum()
+    net_cash = (total_deposits + total_paid_profit) - total_expenses
+
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Net Money", f"₱{cash:,.2f}"); m2.metric("Monthly Profit", f"₱{fs['Profit'].sum() if not fs.empty else 0:,.2f}")
-    m3.metric("Monthly Revenue", f"₱{fs['Total'].sum() if not fs.empty else 0:,.2f}"); m4.metric("Unpaid Balance", f"₱{fs[fs['Payment'] == 'Unpaid']['Total'].sum() if not fs.empty else 0:,.2f}")
+    m1.metric("Total Net Money (Paid Only)", f"₱{net_cash:,.2f}")
+    m2.metric("Monthly Paid Profit", f"₱{paid_monthly['Profit'].sum() if not paid_monthly.empty else 0:,.2f}")
+    m3.metric("Monthly Paid Revenue", f"₱{paid_monthly['Total'].sum() if not paid_monthly.empty else 0:,.2f}")
+    m4.metric("Monthly Unpaid Balance", f"₱{unpaid_monthly['Total'].sum() if not unpaid_monthly.empty else 0:,.2f}")
     
     st.write("---")
     c1, c2 = st.columns(2)
@@ -161,11 +178,12 @@ if page == "Dashboard":
         alerts = sdf[sdf["Quantity"] < 5].sort_values("Quantity")
         st.dataframe(alerts, use_container_width=True, hide_index=True)
     with c2:
-        st.write("### 🏆 Top Sellers")
-        if not fs.empty: st.table(fs.groupby("Product")["Qty"].sum().sort_values(ascending=False).head(5))
+        st.write("### 🏆 Top Sellers (Paid)")
+        if not paid_monthly.empty: 
+            st.table(paid_monthly.groupby("Product")["Qty"].sum().sort_values(ascending=False).head(5))
 
-    st.write("### 📈 Cash Flow Trend")
-    p, d, e = st.session_state.sales[['Date', 'Profit']].rename(columns={'Profit': 'A'}), st.session_state.cash_in[['Date', 'Amount']].rename(columns={'Amount': 'A'}), st.session_state.expenditures[['Date', 'Cost']].rename(columns={'Cost': 'A'})
+    st.write("### 📈 Paid Cash Flow Trend")
+    p, d, e = paid_sales[['Date', 'Profit']].rename(columns={'Profit': 'A'}), st.session_state.cash_in[['Date', 'Amount']].rename(columns={'Amount': 'A'}), st.session_state.expenditures[['Date', 'Cost']].rename(columns={'Cost': 'A'})
     e['A'] = -e['A']; t_df = pd.concat([p, d, e])
     if not t_df.empty:
         t_df['Date'] = pd.to_datetime(t_df['Date']); t_df = t_df.sort_values('Date').groupby('Date').sum().reset_index(); t_df['Cum'] = t_df['A'].cumsum()
@@ -247,13 +265,12 @@ elif page == "Sales":
     for col in num_cols:
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
 
-    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_v4")
+    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_v5")
     
     if not ed.equals(sales_df):
         ndf = ed.copy()
         needs_rerun = False
         
-        # Deletion logic
         if len(ed) < len(st.session_state.sales):
             if st.session_state.user == "Musika":
                 save_data(ndf, SALES_FILE); st.session_state.sales = ndf
@@ -267,7 +284,7 @@ elif page == "Sales":
             
             prod, tier = row["Product"], row["Price Tier"]
             
-            # MATH CALCULATION (Total/Profit) logic
+            # MATH CALCULATION
             if prod and tier:
                 match = db_df[db_df["Product Name"] == prod]
                 if not match.empty:
@@ -281,7 +298,6 @@ elif page == "Sales":
                     calc_total = (unit_price - disc) * qty
                     calc_profit = calc_total - (b_cost * qty)
                     
-                    # Update row immediately if different from current
                     if row["Total"] != calc_total or row["Profit"] != calc_profit:
                         ndf.at[idx, "Cost"] = u_cost
                         ndf.at[idx, "Boxed Cost"] = b_cost
@@ -289,22 +305,35 @@ elif page == "Sales":
                         ndf.at[idx, "Profit"] = calc_profit
                         needs_rerun = True
 
-            # Logging trigger for any core data change
+            # Logging & State Changes
             if old_row is None or any(row[c] != old_row[c] for c in ["Product", "Price Tier", "Qty", "Status", "Payment", "Customer"]):
-                detail_msg = (f"Sales Update: Cust: {row['Customer']}, Item: {row['Product']}, Tier: {row['Price Tier']}, "
-                              f"Qty: {row['Qty']}, Total: ₱{ndf.at[idx, 'Total']:,.2f}, Status: {row['Status']}, Payment: {row['Payment']}")
-                log_action(detail_msg)
+                log_detail = (f"Sales Update: {row['Customer']} | {row['Product']} | {row['Status']} | {row['Payment']} | Total: ₱{ndf.at[idx, 'Total']:,.2f}")
+                log_action(log_detail)
                 needs_rerun = True
 
-            # Stock Deduction
+            # AUTOMATIC INVENTORY SUBTRACTION
+            # Trigger: Status changed to 'Sold' from anything else
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
-                s_df, needed = st.session_state.stock, int(row["Qty"])
+                s_df = st.session_state.stock.copy()
+                needed = int(row["Qty"])
+                # Filter for in-stock items of this product
                 mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
-                for s_idx in s_df[mask].index:
-                    if needed <= 0: break
-                    take = min(needed, s_df.at[s_idx, "Quantity"])
-                    s_df.at[s_idx, "Quantity"] -= take; needed -= take
-                save_data(s_df, STOCK_FILE); needs_rerun = True
+                available_indices = s_df[mask].index
+                
+                total_in_stock = s_df.loc[available_indices, "Quantity"].sum()
+                
+                if total_in_stock >= needed:
+                    for s_idx in available_indices:
+                        if needed <= 0: break
+                        take = min(needed, s_df.at[s_idx, "Quantity"])
+                        s_df.at[s_idx, "Quantity"] -= take
+                        needed -= take
+                    st.session_state.stock = s_df
+                    save_data(s_df, STOCK_FILE)
+                    log_action(f"AUTO-INVENTORY: Subtracted {row['Qty']} of '{prod}' due to 'Sold' status.")
+                else:
+                    st.error(f"Not enough stock for {prod}! Available: {total_in_stock}")
+                needs_rerun = True
 
         save_data(ndf, SALES_FILE)
         st.session_state.sales = ndf
