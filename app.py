@@ -31,7 +31,7 @@ if not os.path.exists("backups"): os.makedirs("backups")
 
 SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Cost", "Boxed Cost", "Profit", "Discount", "Total", "Status", "Payment"]
 
-# --- DYNAMIC CSS (STRICT COMPACT SIDEBAR) ---
+# --- DYNAMIC CSS ---
 st.markdown(f"""
     <style>
     html, body, [class*="ViewContainer"] {{ font-size: 12px !important; }}
@@ -215,64 +215,80 @@ elif page == "Inventory":
 
 elif page == "Sales":
     st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
+    
+    # Restore Status and Payment Dropdowns in config
     conf = {
         "Product": st.column_config.SelectboxColumn(options=product_list),
         "Price Tier": st.column_config.SelectboxColumn(options=price_tiers_list),
+        "Status": st.column_config.SelectboxColumn(options=["Pending", "Sold", "Cancelled"]),
+        "Payment": st.column_config.SelectboxColumn(options=["Unpaid", "Paid"]),
         "Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
         "Boxed Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
         "Profit": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
         "Total": st.column_config.NumberColumn(disabled=True, format="₱%.2f")
     }
     
-    # Load and clean types for editing
+    # Pre-process current sales data to ensure numeric types
     sales_df = st.session_state.sales[SALES_ORDER].copy()
-    for c in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
-        sales_df[c] = pd.to_numeric(sales_df[c], errors='coerce').fillna(0.0)
+    for col in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
+        sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
 
-    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_ed")
+    # Use data_editor with corrected config
+    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_v3")
     
     if not ed.equals(sales_df):
         ndf = ed.copy()
+        
+        # Auto-fill and Calculation Loop
         for idx in ndf.index:
             row = ndf.loc[idx]
-            # Auto-fill logic triggered by Product and Tier
-            if pd.notnull(row["Product"]) and pd.notnull(row["Price Tier"]):
-                match = db_df[db_df["Product Name"] == row["Product"]]
+            prod = row["Product"]
+            tier = row["Price Tier"]
+            
+            # Check if auto-fill is needed
+            if pd.notnull(prod) and pd.notnull(tier) and prod != "":
+                match = db_df[db_df["Product Name"] == prod]
                 if not match.empty:
-                    tier = str(row["Price Tier"])
+                    # Database Values
                     u_cost = float(match["Cost per Unit"].values[0])
                     b_cost = float(match["Boxed Cost"].values[0])
-                    price = float(match[tier].values[0]) if tier in match.columns else 0.0
+                    unit_price = float(match[tier].values[0]) if str(tier) in match.columns else 0.0
                     
+                    # User Inputs (preserved)
                     qty = float(row["Qty"]) if pd.notnull(row["Qty"]) else 1.0
                     disc = float(row["Discount"]) if pd.notnull(row["Discount"]) else 0.0
                     
-                    # Compute and write values back to the dataframe
+                    # Apply Auto-fills
                     ndf.at[idx, "Cost"] = u_cost
                     ndf.at[idx, "Boxed Cost"] = b_cost
-                    total_val = (price - disc) * qty
-                    ndf.at[idx, "Total"] = total_val
-                    ndf.at[idx, "Profit"] = total_val - (b_cost * qty)
                     
-                    # Stock Deduction Logic
+                    # Calculations
+                    total_amount = (unit_price - disc) * qty
+                    ndf.at[idx, "Total"] = total_amount
+                    ndf.at[idx, "Profit"] = total_amount - (b_cost * qty)
+                    
+                    # Stock Deduction Logic (Status change)
                     if idx < len(st.session_state.sales):
                         old_row = st.session_state.sales.iloc[idx]
                         if row["Status"] == "Sold" and old_row["Status"] != "Sold":
                             s_df, needed = st.session_state.stock, int(qty)
-                            mask = (s_df["Product Name"] == row["Product"]) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
+                            mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
                             for s_idx in s_df[mask].index:
                                 if needed <= 0: break
                                 can_take = min(needed, s_df.at[s_idx, "Quantity"])
                                 s_df.at[s_idx, "Quantity"] -= can_take; needed -= can_take
                             save_data(s_df, STOCK_FILE)
+                            log_action(f"Auto-deducted {int(qty)} of {prod} from stock.")
 
-        # Finalize Save
+        # Save Logic
         if len(ed) < len(st.session_state.sales):
-            if st.session_state.user == "Musika": 
+            if st.session_state.user == "Musika":
                 save_data(ndf, SALES_FILE)
                 st.session_state.sales = ndf
                 st.rerun()
-            else: st.warning("Staff deletion blocked."); st.rerun()
+            else:
+                st.warning("Only Musika can delete sales records.")
+                st.rerun()
         else:
             save_data(ndf, SALES_FILE)
             st.session_state.sales = ndf
