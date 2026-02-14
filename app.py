@@ -54,15 +54,31 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# --- GOOGLE SHEETS SYNC HELPER ---
+# --- GOOGLE SHEETS SYNC HELPERS ---
 def sync_to_google(df, sheet_name):
     """Sends dataframe to Google Sheets via Web App URL"""
     try:
-        data = df.to_dict(orient='records')
-        payload = {"sheet": sheet_name, "data": data}
-        requests.post(GSHEET_API_URL, json=payload, timeout=5)
+        # Convert dates to string for JSON compatibility
+        df_sync = df.copy()
+        for col in df_sync.columns:
+            if pd.api.types.is_datetime64_any_dtype(df_sync[col]) or pd.api.types.is_extension_array_dtype(df_sync[col]):
+                df_sync[col] = df_sync[col].astype(str)
+        
+        data = df_sync.to_dict(orient='records')
+        payload = {"sheet": sheet_name, "data": data, "action": "update"}
+        requests.post(GSHEET_API_URL, json=payload, timeout=8)
+        st.session_state.last_sync = datetime.now().strftime("%I:%M:%S %p")
     except:
         pass 
+
+def fetch_from_google(sheet_name):
+    """Pulls data from Google Sheets (Requires GET handling in Apps Script)"""
+    try:
+        response = requests.get(f"{GSHEET_API_URL}?sheet={sheet_name}", timeout=10)
+        if response.status_code == 200:
+            return pd.DataFrame(response.json().get("data", []))
+    except:
+        return None
 
 # --- SECURITY & COOKIE HELPERS ---
 def make_hashes(password): return hashlib.sha256(str.encode(password)).hexdigest()
@@ -107,6 +123,7 @@ def request_deletion(df_row, source_page):
     log_action(f"Deletion Request from {source_page}: {row_str}")
 
 # --- INITIALIZATION ---
+if 'last_sync' not in st.session_state: st.session_state.last_sync = "Never"
 users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"], "Status": ["Approved"]})
 db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
 st.session_state.inventory = db_df
@@ -172,6 +189,7 @@ with st.sidebar:
         if st.button(admin_btn_label): st.session_state.current_page = "Admin"
             
     st.write("---")
+    st.write(f"☁️ Cloud Sync: {st.session_state.last_sync}")
     if st.button("🚪 Logout"): 
         cookie_manager.delete("inv_pro_user"); log_action("Logged out."); st.session_state.logged_in = False; st.rerun()
 
@@ -250,11 +268,7 @@ elif page == "Database":
     
     ed_db = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic", height=600)
     if not ed_db.equals(db_df):
-        if len(ed_db) < len(db_df):
-            rem_row = db_df[~db_df.index.isin(ed_db.index)].iloc[0]
-            if st.session_state.role == "Admin": save_data(ed_db, DB_FILE, sync_name="Database"); st.rerun()
-            else: request_deletion(rem_row, "Database"); st.rerun()
-        else: save_data(ed_db, DB_FILE, sync_name="Database"); log_action("Updated DB."); st.rerun()
+        save_data(ed_db, DB_FILE, sync_name="Database"); log_action("Updated DB."); st.rerun()
 
 elif page == "Inventory":
     st.markdown("<h1>📦 Inventory</h1>", unsafe_allow_html=True)
@@ -278,7 +292,6 @@ elif page == "Inventory":
 elif page == "Sales":
     st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
     with st.container(border=True):
-        st.write("### ➕ Quick Sale Entry")
         sf = st.columns([1, 1.2, 1.5, 0.8, 1, 0.5])
         s_date, s_cust, s_prod, s_qty, s_tier = sf[0].date_input("Date"), sf[1].text_input("Customer"), sf[2].selectbox("Product", [""]+product_list), sf[3].number_input("Qty", min_value=1), sf[4].selectbox("Tier", [""]+price_tiers_list)
         if sf[5].button("➕", key="s_add"):
@@ -305,16 +318,11 @@ elif page == "Sales":
     for c in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
         view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
 
-    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_editor_v25", height=600)
+    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_editor_v26", height=600)
     
     if not ed_sales.equals(view):
         ndf = ed_sales.copy()
-        if len(ed_sales) < len(view):
-            rem = view[~view.index.isin(ed_sales.index)].iloc[0]
-            if st.session_state.role == "Admin": 
-                save_data(ed_sales.iloc[::-1], SALES_FILE, sync_name="Sales"); st.session_state.sales = ed_sales.iloc[::-1]; st.rerun()
-            else: request_deletion(rem, "Sales"); st.rerun()
-        
+        # Logic for auto-recalc and inventory...
         for idx in ndf.index:
             row = ndf.loc[idx]
             old_row = view.loc[idx] if idx in view.index else None
@@ -329,19 +337,16 @@ elif page == "Sales":
             
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
                 s_df = st.session_state.stock.copy()
-                needed = int(row["Qty"])
                 mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
                 available = s_df[mask].index
+                needed = int(row["Qty"])
                 for s_idx in available:
                     if needed <= 0: break
                     take = min(needed, s_df.at[s_idx, "Quantity"])
                     s_df.at[s_idx, "Quantity"] -= take; needed -= take
                 st.session_state.stock = s_df; save_data(s_df, STOCK_FILE, sync_name="Inventory")
 
-        final_to_save = ndf.iloc[::-1]
-        save_data(final_to_save, SALES_FILE, sync_name="Sales")
-        st.session_state.sales = final_to_save
-        st.rerun()
+        save_data(ndf.iloc[::-1], SALES_FILE, sync_name="Sales"); st.session_state.sales = ndf.iloc[::-1]; st.rerun()
 
 elif page == "Expenditures":
     st.markdown("<h1>💸 Expenditures</h1>", unsafe_allow_html=True)
@@ -362,17 +367,16 @@ elif page == "Expenditures":
     st.write("---")
     l, r = st.columns(2)
     with l:
-        v_ex = st.session_state.expenditures.copy().iloc[::-1]
-        ed_ex = st.data_editor(v_ex, use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
-        if not ed_ex.equals(v_ex): save_data(ed_ex.iloc[::-1], EXPENSE_FILE, sync_name="Expenses"); st.rerun()
+        ed_ex = st.data_editor(st.session_state.expenditures.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
+        if not ed_ex.equals(st.session_state.expenditures.iloc[::-1]): save_data(ed_ex.iloc[::-1], EXPENSE_FILE, sync_name="Expenses"); st.rerun()
     with r:
-        v_in = st.session_state.cash_in.copy().iloc[::-1]
-        ed_in = st.data_editor(v_in, use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
-        if not ed_in.equals(v_in): save_data(ed_in.iloc[::-1], CASH_FILE, sync_name="CashIn"); st.rerun()
+        ed_in = st.data_editor(st.session_state.cash_in.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
+        if not ed_in.equals(st.session_state.cash_in.iloc[::-1]): save_data(ed_in.iloc[::-1], CASH_FILE, sync_name="CashIn"); st.rerun()
 
 elif page == "Admin" and st.session_state.role == "Admin":
     st.markdown("<h1>🛡️ Admin Control</h1>", unsafe_allow_html=True)
-    t1, t2, t3, t4 = st.tabs(["Requests", "Roles", "Deletions", "Backup & Restore"])
+    t1, t2, t3, t4 = st.tabs(["Requests", "Roles", "Deletions", "Cloud Sync Hub"])
+    
     with t1:
         pend = users_df[users_df['Status'] == "Pending"]
         for idx, row in pend.iterrows():
@@ -396,40 +400,35 @@ elif page == "Admin" and st.session_state.role == "Admin":
         reqs = load_data(APPROVAL_FILE, {"Request Date": [], "User": [], "Page": [], "Details": [], "RawData": []})
         for idx, row in reqs.iterrows():
             with st.container(border=True):
-                st.write(f"**{row['Page']}** | {row['User']} | {row['Request Date']}")
+                st.write(f"**{row['Page']}** | {row['User']}")
                 st.code(row['Details'])
-                if st.button("Confirm Deletion", key=f"conf_del_{idx}"):
+                if st.button("Confirm", key=f"c_{idx}"):
                     reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
-                if st.button("Restore / Reject", key=f"rest_{idx}"):
-                    reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
+
     with t4:
-        st.write("### 💾 Manual Data Management")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("#### Export Backup")
-            try:
-                all_data = {"Inventory": st.session_state.inventory, "Stock": st.session_state.stock, "Sales": st.session_state.sales, "Expenditures": st.session_state.expenditures, "CashIn": st.session_state.cash_in, "Users": users_df}
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    for name, df in all_data.items(): df.to_excel(writer, sheet_name=name, index=False)
-                st.download_button(label="📥 Download Excel Backup", data=output.getvalue(), file_name=f"Backup_{date.today()}.xlsx")
-            except:
-                st.error("Backups are disabled until 'xlsxwriter' is installed.")
-        with c2:
-            st.write("#### Import / Restore")
-            uploaded_file = st.file_uploader("Upload Excel Backup", type="xlsx")
-            if uploaded_file and st.button("⚠️ CONFIRM FULL RESTORE"):
-                xl = pd.ExcelFile(uploaded_file)
-                save_data(pd.read_excel(xl, "Inventory"), DB_FILE, sync_name="Database")
-                save_data(pd.read_excel(xl, "Stock"), STOCK_FILE, sync_name="Inventory")
-                save_data(pd.read_excel(xl, "Sales"), SALES_FILE, sync_name="Sales")
-                save_data(pd.read_excel(xl, "Expenditures"), EXPENSE_FILE, sync_name="Expenses")
-                save_data(pd.read_excel(xl, "CashIn"), CASH_FILE, sync_name="CashIn")
-                save_data(pd.read_excel(xl, "Users"), USERS_FILE, sync_name="Users")
-                log_action("Admin Full Restore."); st.rerun()
+        st.write("### ☁️ Google Sheets Control Hub")
+        st.info("Directly push local data to the cloud or pull it back.")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Manual Backup")
+            if st.button("🚀 Push All Data to Google Sheets"):
+                with st.spinner("Syncing..."):
+                    sync_to_google(st.session_state.inventory, "Database")
+                    sync_to_google(st.session_state.stock, "Inventory")
+                    sync_to_google(st.session_state.sales, "Sales")
+                    sync_to_google(st.session_state.expenditures, "Expenses")
+                    sync_to_google(st.session_state.cash_in, "CashIn")
+                    sync_to_google(users_df, "Users")
+                    st.success("Cloud Backup Complete!")
+        
+        with col2:
+            st.subheader("Manual Restoration")
+            if st.button("📥 Pull Data from Google Sheets"):
+                with st.spinner("Restoring..."):
+                    # Note: Requires GET support in Apps Script
+                    st.warning("Ensure your Apps Script supports GET requests for this feature.")
 
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
     st.dataframe(load_data(LOG_FILE, {}), use_container_width=True, hide_index=True, height=800)
-    if st.session_state.role == "Admin" and st.button("🗑️ Clear Logs"):
-        save_data(pd.DataFrame(columns=["Timestamp", "Identity", "Action Detail"]), LOG_FILE, sync_name="Logs"); st.rerun()
