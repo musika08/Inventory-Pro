@@ -175,13 +175,13 @@ elif page == "Database":
     st.markdown("<h1>📂 Database</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
-        st.write("### ➕ Add Tier")
+        st.write("### ➕ Add Price Tier")
         t1, t2 = st.columns([3, 1])
         nt = t1.text_input("Tier Name")
         if t2.button("Add"):
             db_df[nt] = 0.0; save_data(db_df, DB_FILE); log_action(f"Added Price Tier: {nt}"); st.rerun()
     with c2:
-        st.write("### 🗑️ Remove Tier")
+        st.write("### 🗑️ Remove Price Tier")
         d1, d2 = st.columns([3, 1])
         td = d1.selectbox("Select Tier", [""] + price_tiers_list)
         if d2.button("Delete"):
@@ -216,47 +216,60 @@ elif page == "Inventory":
 
 elif page == "Sales":
     st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
-    conf = {"Product": st.column_config.SelectboxColumn(options=product_list), "Price Tier": st.column_config.SelectboxColumn(options=price_tiers_list)}
+    conf = {
+        "Product": st.column_config.SelectboxColumn(options=product_list),
+        "Price Tier": st.column_config.SelectboxColumn(options=price_tiers_list),
+        "Cost": st.column_config.NumberColumn(disabled=True),
+        "Boxed Cost": st.column_config.NumberColumn(disabled=True),
+        "Profit": st.column_config.NumberColumn(disabled=True),
+        "Total": st.column_config.NumberColumn(disabled=True)
+    }
     
-    # RE-IMPLEMENTED FULL AUTO-CALCULATION ENGINE
-    cur_sales = st.session_state.sales[SALES_ORDER].copy()
-    ed = st.data_editor(cur_sales, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_ed")
+    # LOAD RELEVANT SALES DATA
+    sales_view = st.session_state.sales[SALES_ORDER].copy()
+    ed = st.data_editor(sales_view, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_ed")
     
-    if not ed.equals(cur_sales):
+    # CALCULATION ENGINE
+    if not ed.equals(sales_view):
         ndf = ed.copy()
         for idx in ndf.index:
             row = ndf.loc[idx]
             if pd.notnull(row["Product"]) and pd.notnull(row["Price Tier"]):
                 match = db_df[db_df["Product Name"] == row["Product"]]
                 if not match.empty:
-                    tier = str(row["Price Tier"])
-                    u_c, b_c = float(match["Cost per Unit"].values[0]), float(match["Boxed Cost"].values[0])
-                    p_t = float(match[tier].values[0]) if tier in match.columns else 0.0
-                    qty, disc = float(row["Qty"] or 1), float(row["Discount"] or 0)
+                    tier_col = str(row["Price Tier"])
+                    unit_cost = float(match["Cost per Unit"].values[0])
+                    box_cost = float(match["Boxed Cost"].values[0])
+                    tier_price = float(match[tier_col].values[0]) if tier_col in match.columns else 0.0
                     
-                    # AUTO-FILL DATA
-                    ndf.at[idx, "Cost"] = u_c
-                    ndf.at[idx, "Boxed Cost"] = b_c
-                    total_val = (p_t - disc) * qty
-                    ndf.at[idx, "Total"] = total_val
-                    ndf.at[idx, "Profit"] = total_val - (b_c * qty)
+                    qty = float(row["Qty"] if pd.notnull(row["Qty"]) else 1)
+                    disc = float(row["Discount"] if pd.notnull(row["Discount"]) else 0)
                     
-                    # Deduct Stock
+                    # AUTO-FILL VALUES
+                    ndf.at[idx, "Cost"] = unit_cost
+                    ndf.at[idx, "Boxed Cost"] = box_cost
+                    subtotal = (tier_price - disc) * qty
+                    ndf.at[idx, "Total"] = subtotal
+                    ndf.at[idx, "Profit"] = subtotal - (box_cost * qty)
+                    
+                    # Stock Deduction Logic
                     old_row = st.session_state.sales.iloc[idx] if idx < len(st.session_state.sales) else None
                     if row["Status"] == "Sold" and (old_row is None or old_row["Status"] != "Sold"):
                         s_df, needed = st.session_state.stock, int(qty)
                         mask = (s_df["Product Name"] == row["Product"]) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
                         for s_idx in s_df[mask].index:
                             if needed <= 0: break
-                            take = min(needed, s_df.at[s_idx, "Quantity"])
-                            s_df.at[s_idx, "Quantity"] -= take; needed -= take
+                            can_take = min(needed, s_df.at[s_idx, "Quantity"])
+                            s_df.at[s_idx, "Quantity"] -= can_take; needed -= can_take
                         save_data(s_df, STOCK_FILE); log_action(f"🟢 [SOLD] {int(qty)} of {row['Product']}")
         
+        # Save Data & Bypass Check
         if len(ed) < len(st.session_state.sales):
-            if st.session_state.user == "Musika": save_data(ndf, SALES_FILE); log_action("Admin deleted sale."); st.rerun()
-            else: st.warning("Staff cannot delete sales records."); st.rerun()
+            if st.session_state.user == "Musika": 
+                save_data(ndf, SALES_FILE); log_action("Admin deleted sale record."); st.rerun()
+            else: st.warning("Staff cannot delete sales."); st.rerun()
         else:
-            save_data(ndf, SALES_FILE); log_action("Updated sales entries."); st.rerun()
+            save_data(ndf, SALES_FILE); log_action("Updated sales data."); st.rerun()
 
 elif page == "Expenditures":
     st.markdown("<h1>💸 Expenditures & Deposits</h1>", unsafe_allow_html=True)
@@ -267,14 +280,14 @@ elif page == "Expenditures":
         ex_d, it, ct = f_ex[0].date_input("Date", key="ex_cal"), f_ex[1].text_input("Item", key="ex_it"), f_ex[2].number_input("Cost", min_value=0.0, key="ex_ct")
         if f_ex[3].button("➕", key="ex_btn"):
             new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
-            st.session_state.expenditures = pd.concat([st.session_state.expenditures, new]); save_data(st.session_state.expenditures, EXPENSE_FILE); log_action(f"Expense: {it}"); st.rerun()
+            st.session_state.expenditures = pd.concat([st.session_state.expenditures, new]); save_data(st.session_state.expenditures, EXPENSE_FILE); log_action(f"Logged Expense: {it}"); st.rerun()
     with c2:
         st.write("### ➕ Log Deposit")
         f_in = st.columns([1.2, 1.5, 1, 0.4])
         in_d, src, amt = f_in[0].date_input("Date", key="in_cal"), f_in[1].text_input("Source", key="in_src"), f_in[2].number_input("Amt", min_value=0.0, key="in_amt")
         if f_in[3].button("➕", key="in_btn"):
             new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
-            st.session_state.cash_in = pd.concat([st.session_state.cash_in, new]); save_data(st.session_state.cash_in, CASH_FILE); log_action(f"Deposit: {src}"); st.rerun()
+            st.session_state.cash_in = pd.concat([st.session_state.cash_in, new]); save_data(st.session_state.cash_in, CASH_FILE); log_action(f"Logged Deposit: {src}"); st.rerun()
     
     st.write("---")
     l, r = st.columns(2)
@@ -282,18 +295,18 @@ elif page == "Expenditures":
         st.write("### 📝 Expense History")
         v_ex = st.session_state.expenditures.copy().iloc[::-1]
         ed_ex = st.data_editor(v_ex, use_container_width=True, hide_index=True, num_rows="dynamic")
-        if not ed_ex.equals(v_ex): save_data(ed_ex.iloc[::-1], EXPENSE_FILE); log_action("Updated Expenses History."); st.rerun()
+        if not ed_ex.equals(v_ex): save_data(ed_ex.iloc[::-1], EXPENSE_FILE); log_action("Edited Expense History."); st.rerun()
     with r:
         st.write("### 📝 Deposit History")
         v_in = st.session_state.cash_in.copy().iloc[::-1]
         ed_in = st.data_editor(v_in, use_container_width=True, hide_index=True, num_rows="dynamic")
-        if not ed_in.equals(v_in): save_data(ed_in.iloc[::-1], CASH_FILE); log_action("Updated Deposits History."); st.rerun()
+        if not ed_in.equals(v_in): save_data(ed_in.iloc[::-1], CASH_FILE); log_action("Edited Deposit History."); st.rerun()
 
 elif page == "Admin" and st.session_state.role == "Admin":
     st.markdown("<h1>🛡️ Admin Approvals</h1>", unsafe_allow_html=True)
     pend_users = users_df[users_df['Status'] == "Pending"]
     for idx, row in pend_users.iterrows():
-        c1, c2 = st.columns([3, 1]); c1.write(f"Account Request: **{row['Username']}**")
+        c1, c2 = st.columns([3, 1]); c1.write(f"Request from: **{row['Username']}**")
         if c2.button(f"Approve {row['Username']}"):
             users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE); log_action(f"Approved {row['Username']}"); st.rerun()
 
@@ -301,4 +314,4 @@ elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
     st.dataframe(load_data(LOG_FILE, {}), use_container_width=True, hide_index=True)
     if st.session_state.role == "Admin" and st.button("🗑️ Clear Logs"):
-        save_data(pd.DataFrame(columns=["Timestamp", "Identity", "Action Detail"]), LOG_FILE); log_action("Wiped logs."); st.rerun()
+        save_data(pd.DataFrame(columns=["Timestamp", "Identity", "Action Detail"]), LOG_FILE); log_action("Logs Wiped."); st.rerun()
