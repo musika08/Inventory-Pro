@@ -32,7 +32,7 @@ if not os.path.exists("backups"): os.makedirs("backups")
 
 SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Cost", "Boxed Cost", "Profit", "Discount", "Total", "Status", "Payment"]
 
-# --- DYNAMIC CSS (MAXIMIZED & INDEX-FREE) ---
+# --- DYNAMIC CSS ---
 st.markdown(f"""
     <style>
     html, body, [class*="ViewContainer"] {{ font-size: 12px !important; }}
@@ -42,9 +42,7 @@ st.markdown(f"""
     .stButton > button {{ width: 100% !important; padding: 2px 8px !important; text-align: left !important; font-size: 11px !important; border-radius: 4px !important; min-height: 24px !important; margin-bottom: -10px !important; }}
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 0.2rem !important; padding-top: 1rem !important; }}
     hr {{ border: none !important; height: 1px !important; background-color: #333 !important; display: block !important; margin: 5px 0 !important; }}
-    /* Hide the index column gutter specifically */
     [data-testid="stElementToolbar"] {{ display: none; }}
-    .row-widget.stCheckbox {{ margin-bottom: -20px; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -254,16 +252,43 @@ elif page == "Inventory":
         
         ed_s = st.data_editor(st.session_state.stock.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
         if len(ed_s) < len(st.session_state.stock):
-            removed_mask = ~st.session_state.stock.iloc[::-1].index.isin(ed_s.index)
-            removed_row = st.session_state.stock.iloc[::-1][removed_mask].iloc[0]
-            if st.session_state.role == "Admin": save_data(ed_s.iloc[::-1], STOCK_FILE); st.rerun()
+            orig_view = st.session_state.stock.copy().iloc[::-1]
+            removed_row = orig_view[~orig_view.index.isin(ed_s.index)].iloc[0]
+            if st.session_state.role == "Admin": 
+                save_data(ed_s.iloc[::-1], STOCK_FILE); log_action("Admin deleted Stock row."); st.rerun()
             else: request_deletion(removed_row, "Inventory"); st.error("Sent."); st.rerun()
         elif not ed_s.equals(st.session_state.stock.iloc[::-1]): save_data(ed_s.iloc[::-1], STOCK_FILE); st.rerun()
 
 elif page == "Sales":
     st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
+    
+    # 1. Quick Entry Form (Like Inventory)
+    with st.container(border=True):
+        st.write("### ➕ Quick Sale Entry")
+        sf = st.columns([1, 1.2, 1.5, 0.8, 1, 0.5])
+        s_date = sf[0].date_input("Date", value=date.today())
+        s_cust = sf[1].text_input("Customer Name", placeholder="Enter name...")
+        s_prod = sf[2].selectbox("Product", [""] + product_list)
+        s_qty = sf[3].number_input("Initial Qty", min_value=1)
+        s_tier = sf[4].selectbox("Initial Tier", [""] + price_tiers_list)
+        
+        if sf[5].button("➕", key="sales_add_btn"):
+            if s_prod == "" or s_tier == "":
+                st.warning("Select Product and Tier first.")
+            else:
+                new_sale = pd.DataFrame([{
+                    "Date": s_date, "Customer": s_cust, "Product": s_prod, "Qty": s_qty, 
+                    "Price Tier": s_tier, "Cost": 0.0, "Boxed Cost": 0.0, "Profit": 0.0, 
+                    "Discount": 0.0, "Total": 0.0, "Status": "Pending", "Payment": "Unpaid"
+                }])
+                st.session_state.sales = pd.concat([st.session_state.sales, new_sale], ignore_index=True)
+                save_data(st.session_state.sales, SALES_FILE)
+                log_action(f"Manual Entry Added: {s_cust} - {s_prod}")
+                st.rerun()
+
+    # 2. Main Sales Table (Newest on Top)
     conf = {
-        "Date": st.column_config.DateColumn("Date", default=date.today(), required=True),
+        "Date": st.column_config.DateColumn("Date", required=True),
         "Customer": st.column_config.TextColumn("Customer"),
         "Product": st.column_config.SelectboxColumn("Product", options=product_list),
         "Price Tier": st.column_config.SelectboxColumn("Price Tier", options=price_tiers_list),
@@ -274,27 +299,33 @@ elif page == "Sales":
         "Profit": st.column_config.NumberColumn("Profit", disabled=True, format="₱%.2f"),
         "Total": st.column_config.NumberColumn("Total", disabled=True, format="₱%.2f")
     }
-    sales_df = st.session_state.sales[SALES_ORDER].copy()
-    for col in ["Customer", "Product", "Price Tier", "Status", "Payment"]:
-        sales_df[col] = sales_df[col].astype(str).replace(['nan', 'None', ''], '')
-    for col in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
-        sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
     
-    # FORCED HIDE_INDEX=TRUE
-    ed_sales = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v16", height=700)
-    
-    if not ed_sales.equals(sales_df):
-        ndf = ed_sales.copy()
-        needs_rerun = False
-        if len(ed_sales) < len(st.session_state.sales):
-            removed_mask = ~sales_df.index.isin(ed_sales.index)
-            removed_row = sales_df[removed_mask].iloc[0]
-            if st.session_state.role == "Admin": save_data(ndf, SALES_FILE); st.session_state.sales = ndf; st.rerun()
-            else: request_deletion(removed_row, "Sales"); st.error("Request sent."); st.rerun()
+    current_sales_view = st.session_state.sales.copy().iloc[::-1] # Show reverse for newest on top
+    # Type cast for math safety
+    for c in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
+        current_sales_view[c] = pd.to_numeric(current_sales_view[c], errors='coerce').fillna(0.0)
 
+    ed_sales = st.data_editor(current_sales_view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_editor_v17", height=600)
+    
+    if not ed_sales.equals(current_sales_view):
+        needs_rerun = False
+        ndf = ed_sales.copy()
+        
+        # Restore Deletion Logic
+        if len(ed_sales) < len(current_sales_view):
+            removed_row = current_sales_view[~current_sales_view.index.isin(ed_sales.index)].iloc[0]
+            if st.session_state.role == "Admin": 
+                save_data(ed_sales.iloc[::-1], SALES_FILE)
+                st.session_state.sales = ed_sales.iloc[::-1]
+                log_action("Admin deleted a Sale."); st.rerun()
+            else: 
+                request_deletion(removed_row, "Sales"); st.error("Deletion requested."); st.rerun()
+
+        # Update Math Logic
         for idx in ndf.index:
             row = ndf.loc[idx]
-            old_row = st.session_state.sales.loc[idx] if idx in st.session_state.sales.index else None
+            old_row = current_sales_view.loc[idx] if idx in current_sales_view.index else None
+            
             prod, tier = row["Product"], row["Price Tier"]
             if prod and tier:
                 match = db_df[db_df["Product Name"] == prod]
@@ -303,13 +334,12 @@ elif page == "Sales":
                     unit_price = float(match[tier].values[0]) if str(tier) in match.columns else 0.0
                     qty, disc = float(row["Qty"]) if row["Qty"] != 0 else 1.0, float(row["Discount"])
                     ctot, cprof = (unit_price - disc) * qty, ((unit_price - disc) * qty) - (b_cost * qty)
+                    
                     if row["Total"] != ctot or row["Profit"] != cprof:
                         ndf.at[idx, "Cost"], ndf.at[idx, "Boxed Cost"], ndf.at[idx, "Total"], ndf.at[idx, "Profit"] = u_cost, b_cost, ctot, cprof
                         needs_rerun = True
 
-            if old_row is None or any(row[c] != old_row[c] for c in ["Product", "Price Tier", "Qty", "Status", "Payment"]):
-                log_action(f"Sale: {row['Customer']} | {row['Product']}"); needs_rerun = True
-
+            # Inventory Subtraction
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
                 s_df = st.session_state.stock.copy()
                 needed = int(row["Qty"])
@@ -322,7 +352,9 @@ elif page == "Sales":
                         s_df.at[s_idx, "Quantity"] -= take; needed -= take
                     st.session_state.stock = s_df; save_data(s_df, STOCK_FILE); log_action(f"Stock: -{row['Qty']} {prod}"); needs_rerun = True
                 else: st.error("Low Stock!")
-        save_data(ndf, SALES_FILE); st.session_state.sales = ndf
+
+        save_data(ndf.iloc[::-1], SALES_FILE)
+        st.session_state.sales = ndf.iloc[::-1]
         if needs_rerun: st.rerun()
 
 elif page == "Expenditures":
