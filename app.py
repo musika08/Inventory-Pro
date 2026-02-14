@@ -228,21 +228,26 @@ elif page == "Sales":
     ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_ed")
     
     if not ed.equals(sales_df):
-        # NEW ROBUST CALCULATION LOOP
         ndf = ed.copy()
+        # Ensure correct types for comparison
+        for col in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
+            ndf[col] = pd.to_numeric(ndf[col], errors='coerce').fillna(0.0)
+
         for idx in ndf.index:
             row = ndf.loc[idx]
-            if pd.notnull(row["Product"]) and pd.notnull(row["Price Tier"]):
-                match = db_df[db_df["Product Name"] == row["Product"]]
+            prod, tier = row["Product"], row["Price Tier"]
+            
+            if pd.notnull(prod) and pd.notnull(tier) and prod in product_list:
+                match = db_df[db_df["Product Name"] == prod]
                 if not match.empty:
-                    tier_name = str(row["Price Tier"])
                     u_cost = float(match["Cost per Unit"].values[0])
                     b_cost = float(match["Boxed Cost"].values[0])
-                    price = float(match[tier_name].values[0]) if tier_name in match.columns else 0.0
+                    price = float(match[tier].values[0]) if tier in match.columns else 0.0
                     
-                    qty = float(row["Qty"]) if pd.notnull(row["Qty"]) else 1.0
-                    discount = float(row["Discount"]) if pd.notnull(row["Discount"]) else 0.0
+                    qty = float(row["Qty"])
+                    discount = float(row["Discount"])
                     
+                    # Update Auto-calculated fields
                     ndf.at[idx, "Cost"] = u_cost
                     ndf.at[idx, "Boxed Cost"] = b_cost
                     total = (price - discount) * qty
@@ -250,21 +255,33 @@ elif page == "Sales":
                     ndf.at[idx, "Profit"] = total - (b_cost * qty)
                     
                     # Stock logic
-                    old_row = st.session_state.sales.iloc[idx] if idx < len(st.session_state.sales) else None
-                    if row["Status"] == "Sold" and (old_row is None or old_row["Status"] != "Sold"):
+                    if idx < len(st.session_state.sales):
+                        old_status = st.session_state.sales.iloc[idx]["Status"]
+                    else:
+                        old_status = None
+
+                    if row["Status"] == "Sold" and old_status != "Sold":
                         s_df, needed = st.session_state.stock, int(qty)
-                        mask = (s_df["Product Name"] == row["Product"]) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
+                        mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
                         for s_idx in s_df[mask].index:
                             if needed <= 0: break
                             can_take = min(needed, s_df.at[s_idx, "Quantity"])
                             s_df.at[s_idx, "Quantity"] -= can_take; needed -= can_take
-                        save_data(s_df, STOCK_FILE); log_action(f"🟢 SOLD: {int(qty)} of {row['Product']}")
+                        save_data(s_df, STOCK_FILE); log_action(f"🟢 SOLD: {int(qty)} of {prod}")
 
         if len(ed) < len(st.session_state.sales):
-            if st.session_state.user == "Musika": save_data(ndf, SALES_FILE); log_action("Admin deleted sale record."); st.rerun()
-            else: st.warning("Staff cannot delete sales."); st.rerun()
+            if st.session_state.user == "Musika": 
+                save_data(ndf, SALES_FILE)
+                log_action("Admin deleted sale record.")
+                st.rerun()
+            else: 
+                st.warning("Staff cannot delete sales.")
+                st.rerun()
         else:
-            save_data(ndf, SALES_FILE); log_action("Updated sales data."); st.rerun()
+            st.session_state.sales = ndf
+            save_data(ndf, SALES_FILE)
+            log_action("Updated sales data and auto-filled calculations.")
+            st.rerun()
 
 elif page == "Expenditures":
     st.markdown("<h1>💸 Expenditures & Deposits</h1>", unsafe_allow_html=True)
