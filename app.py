@@ -32,7 +32,7 @@ if not os.path.exists("backups"): os.makedirs("backups")
 
 SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Cost", "Boxed Cost", "Profit", "Discount", "Total", "Status", "Payment"]
 
-# --- DYNAMIC CSS (MAXIMIZED VIEW) ---
+# --- DYNAMIC CSS (MAXIMIZED & INDEX-FREE) ---
 st.markdown(f"""
     <style>
     html, body, [class*="ViewContainer"] {{ font-size: 12px !important; }}
@@ -42,8 +42,9 @@ st.markdown(f"""
     .stButton > button {{ width: 100% !important; padding: 2px 8px !important; text-align: left !important; font-size: 11px !important; border-radius: 4px !important; min-height: 24px !important; margin-bottom: -10px !important; }}
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 0.2rem !important; padding-top: 1rem !important; }}
     hr {{ border: none !important; height: 1px !important; background-color: #333 !important; display: block !important; margin: 5px 0 !important; }}
-    /* Force tables to use full width */
-    .stDataFrame, .stTable {{ width: 100% !important; }}
+    /* Hide the index column gutter specifically */
+    [data-testid="stElementToolbar"] {{ display: none; }}
+    .row-widget.stCheckbox {{ margin-bottom: -20px; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -84,7 +85,7 @@ def request_deletion(df_row, source_page):
         "RawData": [df_row.to_json()]
     })
     save_data(pd.concat([approvals, new_req], ignore_index=True), APPROVAL_FILE)
-    log_action(f"Requested deletion: {row_str}")
+    log_action(f"Deletion Request: {row_str}")
 
 # --- INITIALIZATION ---
 users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"], "Status": ["Approved"]})
@@ -227,7 +228,13 @@ elif page == "Database":
         if d2.button("Delete"):
             if td: db_df = db_df.drop(columns=[td]); save_data(db_df, DB_FILE); log_action(f"Deleted Price Tier: '{td}'"); st.rerun()
     
-    st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic", height=600)
+    ed_db = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic", height=600)
+    if len(ed_db) < len(db_df):
+        removed_mask = ~db_df.index.isin(ed_db.index)
+        removed_row = db_df[removed_mask].iloc[0]
+        if st.session_state.role == "Admin": save_data(ed_db, DB_FILE); log_action(f"Admin deleted Product."); st.rerun()
+        else: request_deletion(removed_row, "Database"); st.error("Request sent."); st.rerun()
+    elif not ed_db.equals(db_df): save_data(ed_db, DB_FILE); log_action("Modified Database."); st.rerun()
 
 elif page == "Inventory":
     st.markdown("<h1>📦 Inventory</h1>", unsafe_allow_html=True)
@@ -249,11 +256,9 @@ elif page == "Inventory":
         if len(ed_s) < len(st.session_state.stock):
             removed_mask = ~st.session_state.stock.iloc[::-1].index.isin(ed_s.index)
             removed_row = st.session_state.stock.iloc[::-1][removed_mask].iloc[0]
-            if st.session_state.role == "Admin":
-                save_data(ed_s.iloc[::-1], STOCK_FILE); log_action("Admin deleted stock entry."); st.rerun()
-            else: request_deletion(removed_row, "Inventory"); st.error("Request sent."); st.rerun()
-        elif not ed_s.equals(st.session_state.stock.iloc[::-1]):
-            save_data(ed_s.iloc[::-1], STOCK_FILE); log_action("Modified stock logs."); st.rerun()
+            if st.session_state.role == "Admin": save_data(ed_s.iloc[::-1], STOCK_FILE); st.rerun()
+            else: request_deletion(removed_row, "Inventory"); st.error("Sent."); st.rerun()
+        elif not ed_s.equals(st.session_state.stock.iloc[::-1]): save_data(ed_s.iloc[::-1], STOCK_FILE); st.rerun()
 
 elif page == "Sales":
     st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
@@ -275,16 +280,17 @@ elif page == "Sales":
     for col in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
     
-    ed = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v15", height=700)
-    if not ed.equals(sales_df):
-        ndf = ed.copy()
+    # FORCED HIDE_INDEX=TRUE
+    ed_sales = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v16", height=700)
+    
+    if not ed_sales.equals(sales_df):
+        ndf = ed_sales.copy()
         needs_rerun = False
-        if len(ed) < len(st.session_state.sales):
-            removed_mask = ~sales_df.index.isin(ed.index)
+        if len(ed_sales) < len(st.session_state.sales):
+            removed_mask = ~sales_df.index.isin(ed_sales.index)
             removed_row = sales_df[removed_mask].iloc[0]
-            if st.session_state.role == "Admin":
-                save_data(ndf, SALES_FILE); st.session_state.sales = ndf; log_action("Admin deleted sale."); st.rerun()
-            else: request_deletion(removed_row, "Sales"); st.error("Admin approval needed."); st.rerun()
+            if st.session_state.role == "Admin": save_data(ndf, SALES_FILE); st.session_state.sales = ndf; st.rerun()
+            else: request_deletion(removed_row, "Sales"); st.error("Request sent."); st.rerun()
 
         for idx in ndf.index:
             row = ndf.loc[idx]
@@ -302,8 +308,7 @@ elif page == "Sales":
                         needs_rerun = True
 
             if old_row is None or any(row[c] != old_row[c] for c in ["Product", "Price Tier", "Qty", "Status", "Payment"]):
-                log_action(f"Sale: {row['Customer']} | {row['Product']} | ₱{ndf.at[idx, 'Total']:,.2f}")
-                needs_rerun = True
+                log_action(f"Sale: {row['Customer']} | {row['Product']}"); needs_rerun = True
 
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
                 s_df = st.session_state.stock.copy()
@@ -315,7 +320,7 @@ elif page == "Sales":
                         if needed <= 0: break
                         take = min(needed, s_df.at[s_idx, "Quantity"])
                         s_df.at[s_idx, "Quantity"] -= take; needed -= take
-                    st.session_state.stock = s_df; save_data(s_df, STOCK_FILE); log_action(f"AUTO-STOCK: -{row['Qty']} {prod}"); needs_rerun = True
+                    st.session_state.stock = s_df; save_data(s_df, STOCK_FILE); log_action(f"Stock: -{row['Qty']} {prod}"); needs_rerun = True
                 else: st.error("Low Stock!")
         save_data(ndf, SALES_FILE); st.session_state.sales = ndf
         if needs_rerun: st.rerun()
@@ -341,33 +346,27 @@ elif page == "Expenditures":
     st.write("---")
     l, r = st.columns(2)
     with l:
-        st.write("### 📝 Expense History")
         v_ex = st.session_state.expenditures.copy().iloc[::-1]
         ed_ex = st.data_editor(v_ex, use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
         if len(ed_ex) < len(v_ex):
-            removed_mask = ~v_ex.index.isin(ed_ex.index)
-            removed_row = v_ex[removed_mask].iloc[0]
+            removed_row = v_ex[~v_ex.index.isin(ed_ex.index)].iloc[0]
             if st.session_state.role == "Admin": save_data(ed_ex.iloc[::-1], EXPENSE_FILE); st.rerun()
-            else: request_deletion(removed_row, "Expenditures (Expense)"); st.error("Sent."); st.rerun()
+            else: request_deletion(removed_row, "Expense"); st.error("Requested."); st.rerun()
         elif not ed_ex.equals(v_ex): save_data(ed_ex.iloc[::-1], EXPENSE_FILE); st.rerun()
     with r:
-        st.write("### 📝 Deposit History")
         v_in = st.session_state.cash_in.copy().iloc[::-1]
         ed_in = st.data_editor(v_in, use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
         if len(ed_in) < len(v_in):
-            removed_mask = ~v_in.index.isin(ed_in.index)
-            removed_row = v_in[removed_mask].iloc[0]
+            removed_row = v_in[~v_in.index.isin(ed_in.index)].iloc[0]
             if st.session_state.role == "Admin": save_data(ed_in.iloc[::-1], CASH_FILE); st.rerun()
-            else: request_deletion(removed_row, "Expenditures (Deposit)"); st.error("Sent."); st.rerun()
+            else: request_deletion(removed_row, "Deposit"); st.error("Requested."); st.rerun()
         elif not ed_in.equals(v_in): save_data(ed_in.iloc[::-1], CASH_FILE); st.rerun()
 
 elif page == "Admin" and st.session_state.role == "Admin":
     st.markdown("<h1>🛡️ Admin Control Panel</h1>", unsafe_allow_html=True)
-    t1, t2, t3 = st.tabs(["User Requests", "User Management (Roles)", "Pending Deletions"])
+    t1, t2, t3 = st.tabs(["Requests", "Roles", "Deletions"])
     with t1:
-        st.write("### 📩 Access Requests")
         pend = users_df[users_df['Status'] == "Pending"]
-        if pend.empty: st.info("No requests.")
         for idx, row in pend.iterrows():
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2, 1, 1])
@@ -377,7 +376,6 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 if c3.button(f"Reject", key=f"rej_{row['Username']}"):
                     users_df = users_df.drop(idx); save_data(users_df, USERS_FILE); log_action(f"Rejected {row['Username']}"); st.rerun()
     with t2:
-        st.write("### 👥 Roles")
         approved_users = users_df[users_df['Status'] == "Approved"]
         for idx, row in approved_users.iterrows():
             with st.container(border=True):
@@ -385,20 +383,18 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 c1.write(f"User: **{row['Username']}**")
                 nr = c2.selectbox("Role", ["Staff", "Admin"], index=0 if row['Role'] == "Staff" else 1, key=f"role_{row['Username']}")
                 if nr != row['Role']:
-                    users_df.at[idx, 'Role'] = nr; save_data(users_df, USERS_FILE); log_action(f"{row['Username']} is now {nr}"); st.rerun()
+                    users_df.at[idx, 'Role'] = nr; save_data(users_df, USERS_FILE); log_action(f"{row['Username']} is {nr}"); st.rerun()
     with t3:
-        st.write("### ⚠️ Deletions")
         del_reqs = load_data(APPROVAL_FILE, {"Request Date": [], "User": [], "Page": [], "Details": [], "RawData": []})
-        if del_reqs.empty: st.info("No pending deletions.")
         for idx, row in del_reqs.iterrows():
             with st.container(border=True):
-                st.write(f"**{row['Page']}** | Request by {row['User']} ({row['Request Date']})")
+                st.write(f"**{row['Page']}** | {row['User']} | {row['Request Date']}")
                 st.code(row['Details'])
                 c1, c2 = st.columns(2)
                 if c1.button("Confirm", key=f"conf_del_{idx}"):
-                    del_reqs = del_reqs.drop(idx); save_data(del_reqs, APPROVAL_FILE); log_action("Admin confirmed deletion."); st.rerun()
+                    del_reqs = del_reqs.drop(idx); save_data(del_reqs, APPROVAL_FILE); log_action("Admin deleted."); st.rerun()
                 if c2.button("Restore", key=f"rest_{idx}"):
-                    del_reqs = del_reqs.drop(idx); save_data(del_reqs, APPROVAL_FILE); log_action("Admin rejected deletion."); st.rerun()
+                    del_reqs = del_reqs.drop(idx); save_data(del_reqs, APPROVAL_FILE); log_action("Admin restored."); st.rerun()
 
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
