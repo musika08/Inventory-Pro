@@ -23,6 +23,7 @@ CASH_FILE = "cash_in.csv"
 LOG_FILE = "activity_log.csv"
 USERS_FILE = "users_db.csv"
 EXPENSE_COLS = ["Cost per Unit", "Boxed Cost"]
+CORE_COLS = ["Product Name"] + EXPENSE_COLS
 
 if not os.path.exists("backups"):
     os.makedirs("backups")
@@ -32,20 +33,10 @@ SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Cost", "Boxe
 # --- DYNAMIC CSS (STRICT COMPACT SIDEBAR) ---
 st.markdown(f"""
     <style>
-    /* Global Font Size */
     html, body, [class*="ViewContainer"] {{ font-size: 12px !important; }}
     .block-container {{ padding: 1rem !important; }}
-    
-    /* Compact Sidebar Width */
-    [data-testid="stSidebar"] {{
-        min-width: 160px !important;
-        max-width: 160px !important;
-    }}
-    
-    /* Headers */
+    [data-testid="stSidebar"] {{ min-width: 160px !important; max-width: 160px !important; }}
     h1 {{ display: block !important; font-size: 1.3rem !important; font-weight: 700 !important; margin-top: 0.5rem !important; color: #FFFFFF !important; }}
-    
-    /* Navigation Buttons Styling - Ultra Compact */
     .stButton > button {{ 
         width: 100% !important; 
         padding: 2px 8px !important; 
@@ -56,13 +47,7 @@ st.markdown(f"""
         line-height: 1.2 !important;
         margin-bottom: -10px !important;
     }}
-    
-    /* Sidebar Section Spacing */
-    [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{
-        gap: 0.2rem !important;
-        padding-top: 1rem !important;
-    }}
-
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 0.2rem !important; padding-top: 1rem !important; }}
     hr {{ border: none !important; height: 1px !important; background-color: #333 !important; display: block !important; margin: 5px 0 !important; }}
     </style>
     """, unsafe_allow_html=True)
@@ -135,7 +120,7 @@ st.session_state.expenditures = load_data(EXPENSE_FILE, {"Date": [], "Item": [],
 st.session_state.cash_in = load_data(CASH_FILE, {"Date": [], "Source": [], "Amount": []})
 
 product_list = db_df["Product Name"].dropna().unique().tolist()
-price_tiers_list = [c for c in db_df.columns if c not in ["Product Name"] + EXPENSE_COLS]
+price_tiers_list = [c for c in db_df.columns if c not in CORE_COLS]
 
 # --- SIDEBAR NAVIGATION ---
 with st.sidebar:
@@ -212,13 +197,33 @@ elif page == "Dashboard":
 # --- DATABASE ---
 elif page == "Database":
     st.markdown("<h1>📂 Database</h1>", unsafe_allow_html=True)
-    t1, t2 = st.columns([4, 1])
-    nt = t1.text_input("New Price Tier")
-    if t2.button("➕"):
-        if nt and nt not in db_df.columns:
-            db_df[nt] = 0.0; save_data(db_df, DB_FILE); log_action(f"Added Tier {nt}"); st.rerun()
+    
+    # Section: Manage Tiers
+    col_add, col_del = st.columns(2)
+    with col_add:
+        st.write("### ➕ Add Price Tier")
+        t1, t2 = st.columns([3, 1])
+        nt = t1.text_input("New Tier Name", key="new_t_name")
+        if t2.button("Add"):
+            if nt and nt not in db_df.columns:
+                db_df[nt] = 0.0; save_data(db_df, DB_FILE); log_action(f"📂 Added Tier {nt}"); st.rerun()
+            elif nt in db_df.columns: st.warning("Tier already exists.")
+    
+    with col_del:
+        st.write("### 🗑️ Remove Price Tier")
+        d1, d2 = st.columns([3, 1])
+        tier_to_del = d1.selectbox("Select Tier to Remove", [""] + price_tiers_list)
+        if d2.button("Delete"):
+            if tier_to_del and tier_to_del in db_df.columns:
+                db_df = db_df.drop(columns=[tier_to_del])
+                save_data(db_df, DB_FILE)
+                log_action(f"📂 Deleted Tier {tier_to_del}")
+                st.rerun()
+
+    st.write("---")
+    st.write("### 📝 Master Product Table")
     ed = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic")
-    if not ed.equals(db_df): save_data(ed, DB_FILE); log_action("DB Modified"); st.rerun()
+    if not ed.equals(db_df): save_data(ed, DB_FILE); log_action("DB Table Updated"); st.rerun()
 
 # --- INVENTORY ---
 elif page == "Inventory":
