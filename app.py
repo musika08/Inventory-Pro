@@ -167,8 +167,11 @@ if page == "Dashboard":
         s_m = f2.selectbox("Month", ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], index=date.today().month-1)
     
     m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
+    
+    # Filtered Monthly Data
     fs_monthly = dash_sales[(dash_sales["Date"].dt.year == s_y) & (dash_sales["Date"].dt.month == m_idx)]
     paid_monthly = fs_monthly[fs_monthly['Payment'] == 'Paid']
+    
     exp_df = st.session_state.expenditures.copy()
     exp_df["Date"] = pd.to_datetime(exp_df["Date"], errors='coerce')
     monthly_exp_val = exp_df[(exp_df["Date"].dt.year == s_y) & (exp_df["Date"].dt.month == m_idx)]['Cost'].sum()
@@ -178,10 +181,15 @@ if page == "Dashboard":
     margin = (prof / rev * 100) if rev > 0 else 0
     exp_ratio = (monthly_exp_val / rev * 100) if rev > 0 else 0
 
+    # Metric Row (UPDATED LOGIC: Net Money is now based on Paid Revenue/Amount)
     m1, m2, m3, m4 = st.columns(4)
-    total_paid_profit = dash_sales[dash_sales['Payment'] == 'Paid']['Profit'].sum()
-    net_cash = (st.session_state.cash_in['Amount'].sum() + total_paid_profit) - st.session_state.expenditures['Cost'].sum()
-    m1.metric("Total Net Money", f"₱{net_cash:,.2f}")
+    total_paid_revenue = dash_sales[dash_sales['Payment'] == 'Paid']['Total'].sum()
+    total_deposits = st.session_state.cash_in['Amount'].sum()
+    total_expenses_all = st.session_state.expenditures['Cost'].sum()
+    
+    net_cash_on_hand = (total_deposits + total_paid_revenue) - total_expenses_all
+    
+    m1.metric("Total Net Money (Cash)", f"₱{net_cash_on_hand:,.2f}", help="Total Deposits + Paid Sales Revenue - Expenses")
     m2.metric("Monthly Paid Profit", f"₱{prof:,.2f}")
     m3.metric("Profit Margin %", f"{margin:.1f}%")
     m4.metric("Expense Ratio", f"{exp_ratio:.1f}%")
@@ -271,7 +279,6 @@ elif page == "Sales":
         
         if sf[5].button("➕", key="sales_add_btn"):
             if s_prod and s_tier:
-                # INSTANT COMPUTATION LOGIC
                 match = db_df[db_df["Product Name"] == s_prod]
                 if not match.empty:
                     u_c = float(match["Cost per Unit"].values[0])
@@ -306,7 +313,7 @@ elif page == "Sales":
     view = st.session_state.sales.copy().iloc[::-1]
     for c in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]: view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
 
-    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v20", height=600)
+    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v21", height=600)
     
     if not ed_sales.equals(view):
         ndf = ed_sales.copy()
@@ -337,7 +344,7 @@ elif page == "Sales":
                 available = s_df[mask].index
                 if s_df.loc[available, "Quantity"].sum() >= need:
                     for s_idx in available:
-                        if need <= 0: break
+                        if needed <= 0: break
                         take = min(need, s_df.at[s_idx, "Quantity"])
                         s_df.at[s_idx, "Quantity"] -= take; need -= take
                     st.session_state.stock = s_df; save_data(s_df, STOCK_FILE); log_action(f"Stock Subtracted: {row['Qty']} {prod}")
@@ -348,11 +355,13 @@ elif page == "Expenditures":
     st.markdown("<h1>💸 Expenditures</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
+        st.write("### ➖ Log Expense")
         ex_d, it, ct = st.date_input("Ex Date"), st.text_input("Ex Item"), st.number_input("Ex Cost", min_value=0.0)
         if st.button("Add Expense", key="ex_btn"):
             new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
             st.session_state.expenditures = pd.concat([st.session_state.expenditures, new]); save_data(st.session_state.expenditures, EXPENSE_FILE); st.rerun()
     with c2:
+        st.write("### ➕ Log Deposit")
         in_d, src, amt = st.date_input("Dep Date"), st.text_input("Dep Source"), st.number_input("Dep Amount", min_value=0.0)
         if st.button("Add Deposit", key="dep_btn"):
             new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
