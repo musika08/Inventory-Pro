@@ -60,7 +60,6 @@ def sync_to_google(df, sheet_name):
     try:
         if df is None or df.empty:
             return False
-        # Convert dates to string for JSON compatibility and fill NaNs
         df_sync = df.copy()
         for col in df_sync.columns:
             if pd.api.types.is_datetime64_any_dtype(df_sync[col]) or pd.api.types.is_extension_array_dtype(df_sync[col]):
@@ -79,7 +78,7 @@ def sync_to_google(df, sheet_name):
         pass 
 
 def fetch_from_google(sheet_name):
-    """Pulls data from Google Sheets (Requires GET handling in Apps Script)"""
+    """Pulls data from Google Sheets"""
     try:
         response = requests.get(f"{GSHEET_API_URL}?sheet={sheet_name}", timeout=10)
         if response.status_code == 200:
@@ -215,7 +214,10 @@ if page == "Dashboard":
     
     m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
     fs_monthly = dash_sales[(dash_sales["Date"].dt.year == s_y) & (dash_sales["Date"].dt.month == m_idx)]
-    paid_monthly = fs_monthly[fs_monthly['Payment'] == 'Paid']
+    
+    # FILTER: ONLY POSITIVE PROFITS
+    paid_monthly = fs_monthly[(fs_monthly['Payment'] == 'Paid') & (fs_monthly['Profit'] > 0)]
+    
     exp_df = st.session_state.expenditures.copy()
     exp_df["Date"] = pd.to_datetime(exp_df["Date"], errors='coerce')
     monthly_exp_val = exp_df[(exp_df["Date"].dt.year == s_y) & (exp_df["Date"].dt.month == m_idx)]['Cost'].sum()
@@ -310,7 +312,7 @@ elif page == "Sales":
                 st.session_state.sales = pd.concat([st.session_state.sales, new_row], ignore_index=True)
                 save_data(st.session_state.sales, SALES_FILE, sync_name="Sales"); st.rerun()
 
-    # RESTORED DROPDOWN CONFIGURATION
+    # RESTORED STATUS & PAYMENT DROPDOWNS
     conf = {
         "Date": st.column_config.DateColumn("Date", required=True),
         "Product": st.column_config.SelectboxColumn("Product", options=product_list),
@@ -393,24 +395,22 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 if c2.button(f"Approve", key=f"app_{row['Username']}"):
                     users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
                 if c3.button(f"Reject", key=f"rej_{row['Username']}"):
-                    users_df = users_df.drop(idx); save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
+                    save_data(users_df.drop(idx), USERS_FILE, sync_name="Users"); st.rerun()
     with t2:
         approved = users_df[users_df['Status'] == "Approved"]
         for idx, row in approved.iterrows():
             with st.container(border=True):
                 c1, c2 = st.columns([2, 2])
                 c1.write(f"User: **{row['Username']}**")
-                nr = c2.selectbox("Role", ["Staff", "Admin"], index=0 if row['Role'] == "Staff" else 1, key=f"role_{row['Username']}")
+                nr = c2.selectbox("Role", ["Staff", "Admin"], index=0 if row['Role'] == "Staff" else 1, key=f"rl_{row['Username']}")
                 if nr != row['Role']:
                     users_df.at[idx, 'Role'] = nr; save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
     with t3:
-        reqs = load_data(APPROVAL_FILE, {"Request Date": [], "User": [], "Page": [], "Details": [], "RawData": []})
+        reqs = load_data(APPROVAL_FILE, {"Details": []})
         for idx, row in reqs.iterrows():
             with st.container(border=True):
-                st.write(f"**{row['Page']}** | {row['User']}")
-                st.code(row['Details'])
-                if st.button("Confirm", key=f"c_{idx}"):
-                    reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
+                st.write(row['Details']); 
+                if st.button("Confirm", key=f"cd_{idx}"): save_data(reqs.drop(idx), APPROVAL_FILE); st.rerun()
 
     with t4:
         st.write("### ☁️ Google Sheets Control Hub")
