@@ -218,82 +218,78 @@ elif page == "Sales":
     st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
     
     conf = {
-        "Customer": st.column_config.TextColumn("Customer", width="medium"),
-        "Product": st.column_config.SelectboxColumn(options=product_list),
-        "Price Tier": st.column_config.SelectboxColumn(options=price_tiers_list),
-        "Status": st.column_config.SelectboxColumn(options=["Pending", "Sold", "Cancelled"]),
-        "Payment": st.column_config.SelectboxColumn(options=["Unpaid", "Paid"]),
-        "Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
-        "Boxed Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
-        "Profit": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
-        "Total": st.column_config.NumberColumn(disabled=True, format="₱%.2f")
+        "Customer": st.column_config.TextColumn("Customer"),
+        "Product": st.column_config.SelectboxColumn("Product", options=product_list),
+        "Price Tier": st.column_config.SelectboxColumn("Price Tier", options=price_tiers_list),
+        "Status": st.column_config.SelectboxColumn("Status", options=["Pending", "Sold", "Cancelled"]),
+        "Payment": st.column_config.SelectboxColumn("Payment", options=["Unpaid", "Paid"]),
+        "Cost": st.column_config.NumberColumn("Cost", disabled=True, format="₱%.2f"),
+        "Boxed Cost": st.column_config.NumberColumn("Boxed Cost", disabled=True, format="₱%.2f"),
+        "Profit": st.column_config.NumberColumn("Profit", disabled=True, format="₱%.2f"),
+        "Total": st.column_config.NumberColumn("Total", disabled=True, format="₱%.2f")
     }
     
-    # Load and force numeric for math consistency
+    # --- DATA PREP (Fixes the Compatibility Error) ---
     sales_df = st.session_state.sales[SALES_ORDER].copy()
-    for col in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
+    # Explicitly cast text columns to string to avoid "None/NaN" being treated as float
+    text_cols = ["Customer", "Product", "Price Tier", "Status", "Payment"]
+    for col in text_cols:
+        sales_df[col] = sales_df[col].astype(str).replace(['nan', 'None', ''], '')
+        
+    # Explicitly cast numeric columns
+    num_cols = ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]
+    for col in num_cols:
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
 
-    # Use session state to handle editor changes without forcing immediate rerun on text entry
-    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_v2")
+    # Use a persistent key
+    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_final")
     
     if not ed.equals(sales_df):
         ndf = ed.copy()
         needs_rerun = False
         
-        # Check for Row deletions first
+        # Deletion check
         if len(ed) < len(st.session_state.sales):
             if st.session_state.user == "Musika":
-                save_data(ndf, SALES_FILE)
-                st.session_state.sales = ndf
-                st.rerun()
+                save_data(ndf, SALES_FILE); st.session_state.sales = ndf; st.rerun()
             else:
-                st.warning("Only Musika can delete entries.")
-                st.rerun()
+                st.warning("Only Musika can delete entries."); st.rerun()
 
         for idx in ndf.index:
             row = ndf.loc[idx]
-            # Detect changes between current editor and session state
+            # Safety check: Get old row if it exists
             old_row = st.session_state.sales.loc[idx] if idx in st.session_state.sales.index else None
             
-            # Logic: Only compute/update if core fields changed or it's a new row
-            prod = row["Product"]
-            tier = row["Price Tier"]
+            # Logic: Update math if Product, Tier, Qty, or Discount changed
+            prod, tier = row["Product"], row["Price Tier"]
             
-            if old_row is None or row["Product"] != old_row["Product"] or row["Price Tier"] != old_row["Price Tier"] or row["Qty"] != old_row["Qty"] or row["Discount"] != old_row["Discount"]:
-                if pd.notnull(prod) and pd.notnull(tier) and prod != "":
+            if old_row is None or any(row[c] != old_row[c] for c in ["Product", "Price Tier", "Qty", "Discount"]):
+                if prod and tier:
                     match = db_df[db_df["Product Name"] == prod]
                     if not match.empty:
                         u_cost = float(match["Cost per Unit"].values[0])
                         b_cost = float(match["Boxed Cost"].values[0])
                         unit_price = float(match[tier].values[0]) if str(tier) in match.columns else 0.0
                         
-                        qty = float(row["Qty"]) if pd.notnull(row["Qty"]) else 1.0
-                        disc = float(row["Discount"]) if pd.notnull(row["Discount"]) else 0.0
-                        
-                        ndf.at[idx, "Cost"] = u_cost
-                        ndf.at[idx, "Boxed Cost"] = b_cost
+                        qty, disc = float(row["Qty"]), float(row["Discount"])
+                        ndf.at[idx, "Cost"], ndf.at[idx, "Boxed Cost"] = u_cost, b_cost
                         total_amount = (unit_price - disc) * qty
-                        ndf.at[idx, "Total"] = total_amount
-                        ndf.at[idx, "Profit"] = total_amount - (b_cost * qty)
+                        ndf.at[idx, "Total"], ndf.at[idx, "Profit"] = total_amount, total_amount - (b_cost * qty)
                         needs_rerun = True
 
-            # Inventory Management on Status Change
+            # Stock Deduction
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
                 s_df, needed = st.session_state.stock, int(row["Qty"])
                 mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
                 for s_idx in s_df[mask].index:
                     if needed <= 0: break
-                    can_take = min(needed, s_df.at[s_idx, "Quantity"])
-                    s_df.at[s_idx, "Quantity"] -= can_take; needed -= can_take
-                save_data(s_df, STOCK_FILE)
-                needs_rerun = True
+                    take = min(needed, s_df.at[s_idx, "Quantity"])
+                    s_df.at[s_idx, "Quantity"] -= take; needed -= take
+                save_data(s_df, STOCK_FILE); needs_rerun = True
 
-        # Final Save
         save_data(ndf, SALES_FILE)
         st.session_state.sales = ndf
-        if needs_rerun:
-            st.rerun()
+        if needs_rerun: st.rerun()
 
 elif page == "Expenditures":
     st.markdown("<h1>💸 Expenditures & Deposits</h1>", unsafe_allow_html=True)
