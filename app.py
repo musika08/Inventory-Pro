@@ -4,7 +4,7 @@ import os
 import shutil
 from datetime import date, datetime
 import hashlib
-import ast
+import extra_streamlit_components as stx
 
 # --- PRE-FLIGHT CHECK ---
 try:
@@ -44,9 +44,11 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# --- SECURITY & DATA HELPERS ---
+# --- SECURITY & COOKIE HELPERS ---
 def make_hashes(password): return hashlib.sha256(str.encode(password)).hexdigest()
 def check_hashes(password, hashed_text): return make_hashes(password) == hashed_text
+
+cookie_manager = stx.CookieManager()
 
 def load_data(file, defaults):
     if os.path.exists(file) and os.path.getsize(file) > 0:
@@ -80,20 +82,32 @@ st.session_state.cash_in = load_data(CASH_FILE, {"Date": [], "Source": [], "Amou
 product_list = sorted(db_df["Product Name"].dropna().unique().tolist())
 price_tiers_list = [c for c in db_df.columns if c not in CORE_COLS]
 
-# --- LOGIN / SIGNUP ---
+# --- AUTHENTICATION LOGIC (COOKIE BASED) ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'current_page' not in st.session_state: st.session_state.current_page = "Dashboard"
+
+# Check for existing cookie
+saved_user = cookie_manager.get(cookie="inv_pro_user")
+if saved_user and not st.session_state.logged_in:
+    res = users_df[users_df['Username'] == saved_user]
+    if not res.empty and res.iloc[0]['Status'] == "Approved":
+        st.session_state.logged_in = True
+        st.session_state.user = saved_user
+        st.session_state.role = res.iloc[0]['Role']
 
 if not st.session_state.logged_in:
     st.markdown("<h1>🔐 Inventory Pro</h1>", unsafe_allow_html=True)
     t1, t2 = st.tabs(["Login", "Request Access"])
     with t1:
         u, p = st.text_input("Username"), st.text_input("Password", type="password")
+        remember = st.checkbox("Remember Me")
         if st.button("Login"):
             res = users_df[users_df['Username'] == u]
             if not res.empty and check_hashes(p, res.iloc[0]['Password']):
                 if res.iloc[0]['Status'] == "Approved":
                     st.session_state.logged_in, st.session_state.user, st.session_state.role = True, u, res.iloc[0]['Role']
+                    if remember:
+                        cookie_manager.set("inv_pro_user", u, expires_at=datetime.now().replace(year=datetime.now().year + 1))
                     log_action("Logged in.")
                     st.rerun()
                 else: st.error("Account pending approval.")
@@ -101,14 +115,14 @@ if not st.session_state.logged_in:
     with t2:
         nu, np = st.text_input("New Username"), st.text_input("New Password", type="password")
         if st.button("Submit Sign-Up"):
-            if nu in users_df['Username'].values: st.error("Username taken.")
+            if nu in users_df['Username'].values: st.error("User exists.")
             else:
                 new_u = pd.DataFrame({"Username": [nu], "Password": [make_hashes(np)], "Role": ["Staff"], "Status": ["Pending"]})
                 save_data(pd.concat([users_df, new_u], ignore_index=True), USERS_FILE)
-                st.success("Registration request sent to Musika.")
+                st.success("Request sent to Musika.")
     st.stop()
 
-# --- SIDEBAR ---
+# --- SIDEBAR (WITH ICONS) ---
 with st.sidebar:
     st.markdown(f"👤 **{st.session_state.user}**")
     if st.button("📊 Dashboard"): st.session_state.current_page = "Dashboard"
@@ -121,6 +135,7 @@ with st.sidebar:
         if st.button("🛡️ Admin Page"): st.session_state.current_page = "Admin"
     st.write("---")
     if st.button("🚪 Logout"): 
+        cookie_manager.delete("inv_pro_user")
         log_action("Logged out.")
         st.session_state.logged_in = False; st.rerun()
 
@@ -158,7 +173,7 @@ if page == "Dashboard":
         st.write("### 🏆 Top Sellers")
         if not fs.empty: st.table(fs.groupby("Product")["Qty"].sum().sort_values(ascending=False).head(5))
 
-    st.write("### 📈 Cumulative Cash Flow")
+    st.write("### 📈 Cash Flow Trend")
     p, d, e = st.session_state.sales[['Date', 'Profit']].rename(columns={'Profit': 'A'}), st.session_state.cash_in[['Date', 'Amount']].rename(columns={'Amount': 'A'}), st.session_state.expenditures[['Date', 'Cost']].rename(columns={'Cost': 'A'})
     e['A'] = -e['A']; t_df = pd.concat([p, d, e])
     if not t_df.empty:
@@ -169,13 +184,13 @@ elif page == "Database":
     st.markdown("<h1>📂 Database</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
-        st.write("### ➕ Add Price Tier")
+        st.write("### ➕ Add Tier")
         t1, t2 = st.columns([3, 1])
         nt = t1.text_input("Tier Name")
         if t2.button("Add"):
             db_df[nt] = 0.0; save_data(db_df, DB_FILE); log_action(f"Added Tier {nt}"); st.rerun()
     with c2:
-        st.write("### 🗑️ Remove Price Tier")
+        st.write("### 🗑️ Remove Tier")
         d1, d2 = st.columns([3, 1])
         td = d1.selectbox("Select Tier", [""] + price_tiers_list)
         if d2.button("Delete"):
@@ -183,12 +198,12 @@ elif page == "Database":
     
     ed = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic")
     if len(ed) < len(db_df):
-        if st.session_state.role == "Admin": # DIRECT DELETE FOR ADMIN
+        if st.session_state.user == "Musika":
             save_data(ed, DB_FILE); log_action("Admin deleted product row."); st.rerun()
-        else: # PENDING FOR STAFF
-            pending = load_data(APPROVAL_FILE, {"Timestamp":[], "User":[], "Page":[], "RowIndex":[]})
-            new_r = pd.DataFrame({"Timestamp":[datetime.now().strftime("%Y-%m-%d %H:%M")], "User":[st.session_state.user], "Page":["Database"], "RowIndex":[len(db_df)-1]})
-            save_data(pd.concat([pending, new_r]), APPROVAL_FILE); st.warning("Staff delete request sent."); st.rerun()
+        else:
+            pending = load_data(APPROVAL_FILE, {"Timestamp":[], "User":[], "Page":[], "Details":[]})
+            new_r = pd.DataFrame({"Timestamp":[datetime.now().strftime("%Y-%m-%d %H:%M")], "User":[st.session_state.user], "Page":["Database"], "Details":["Product row deletion"]})
+            save_data(pd.concat([pending, new_r]), APPROVAL_FILE); st.warning("Delete request sent to Admin."); st.rerun()
     elif not ed.equals(db_df): save_data(ed, DB_FILE); log_action("Modified Database data."); st.rerun()
 
 elif page == "Inventory":
@@ -206,15 +221,14 @@ elif page == "Inventory":
         if f[4].button("➕"):
             nr = pd.DataFrame({"Product Name": [np], "Quantity": [nq], "Status": [ns], "Date": [c_date]})
             st.session_state.stock = pd.concat([st.session_state.stock, nr], ignore_index=True); save_data(st.session_state.stock, STOCK_FILE); log_action(f"Stocked IN {nq} of {np}"); st.rerun()
-        
         ed_s = st.data_editor(st.session_state.stock.copy().iloc[::-1], use_container_width=True, num_rows="dynamic")
         if len(ed_s) < len(st.session_state.stock):
-            if st.session_state.role == "Admin":
+            if st.session_state.user == "Musika":
                 save_data(ed_s.iloc[::-1], STOCK_FILE); log_action("Admin deleted stock entry."); st.rerun()
             else:
-                pending = load_data(APPROVAL_FILE, {"Timestamp":[], "User":[], "Page":[], "RowIndex":[]})
-                new_r = pd.DataFrame({"Timestamp":[datetime.now().strftime("%Y-%m-%d %H:%M")], "User":[st.session_state.user], "Page":["Inventory"], "RowIndex":[0]})
-                save_data(pd.concat([pending, new_r]), APPROVAL_FILE); st.warning("Staff delete request sent."); st.rerun()
+                pending = load_data(APPROVAL_FILE, {"Timestamp":[], "User":[], "Page":[], "Details":[]})
+                new_r = pd.DataFrame({"Timestamp":[datetime.now().strftime("%Y-%m-%d %H:%M")], "User":[st.session_state.user], "Page":["Inventory"], "Details":["Stock row deletion"]})
+                save_data(pd.concat([pending, new_r]), APPROVAL_FILE); st.warning("Delete request sent to Admin."); st.rerun()
         elif not ed_s.equals(st.session_state.stock.iloc[::-1]): save_data(ed_s.iloc[::-1], STOCK_FILE); log_action("Modified stock logs."); st.rerun()
 
 elif page == "Sales":
@@ -222,12 +236,12 @@ elif page == "Sales":
     conf = {"Product": st.column_config.SelectboxColumn(options=product_list), "Price Tier": st.column_config.SelectboxColumn(options=price_tiers_list)}
     ed = st.data_editor(st.session_state.sales[SALES_ORDER], use_container_width=True, num_rows="dynamic", column_config=conf)
     if len(ed) < len(st.session_state.sales):
-        if st.session_state.role == "Admin":
+        if st.session_state.user == "Musika":
             save_data(ed, SALES_FILE); log_action("Admin deleted sale record."); st.rerun()
         else:
-            pending = load_data(APPROVAL_FILE, {"Timestamp":[], "User":[], "Page":[], "RowIndex":[]})
-            new_r = pd.DataFrame({"Timestamp":[datetime.now().strftime("%Y-%m-%d %H:%M")], "User":[st.session_state.user], "Page":["Sales"], "RowIndex":[len(st.session_state.sales)-1]})
-            save_data(pd.concat([pending, new_r]), APPROVAL_FILE); st.warning("Staff delete request sent."); st.rerun()
+            pending = load_data(APPROVAL_FILE, {"Timestamp":[], "User":[], "Page":[], "Details":[]})
+            new_r = pd.DataFrame({"Timestamp":[datetime.now().strftime("%Y-%m-%d %H:%M")], "User":[st.session_state.user], "Page":["Sales"], "Details":["Sale row deletion"]})
+            save_data(pd.concat([pending, new_r]), APPROVAL_FILE); st.warning("Delete request sent to Admin."); st.rerun()
     elif not ed.equals(st.session_state.sales[SALES_ORDER]): save_data(ed, SALES_FILE); log_action("Updated sales data."); st.rerun()
 
 elif page == "Expenditures":
@@ -255,40 +269,34 @@ elif page == "Expenditures":
         v_ex = st.session_state.expenditures.copy().iloc[::-1]
         ed_ex = st.data_editor(v_ex, use_container_width=True, hide_index=True, num_rows="dynamic")
         if len(ed_ex) < len(v_ex):
-            if st.session_state.role == "Admin": save_data(ed_ex.iloc[::-1], EXPENSE_FILE); log_action("Admin deleted expense."); st.rerun()
+            if st.session_state.user == "Musika": save_data(ed_ex.iloc[::-1], EXPENSE_FILE); log_action("Admin deleted expense."); st.rerun()
             else: st.error("Staff cannot delete financials."); st.rerun()
     with r:
         st.write("### 📝 Deposit History")
         v_in = st.session_state.cash_in.copy().iloc[::-1]
         ed_in = st.data_editor(v_in, use_container_width=True, hide_index=True, num_rows="dynamic")
         if len(ed_in) < len(v_in):
-            if st.session_state.role == "Admin": save_data(ed_in.iloc[::-1], CASH_FILE); log_action("Admin deleted deposit."); st.rerun()
+            if st.session_state.user == "Musika": save_data(ed_in.iloc[::-1], CASH_FILE); log_action("Admin deleted deposit."); st.rerun()
             else: st.error("Staff cannot delete financials."); st.rerun()
 
 elif page == "Admin" and st.session_state.role == "Admin":
     st.markdown("<h1>🛡️ Admin Approvals</h1>", unsafe_allow_html=True)
-    # User Approvals
     pend_users = users_df[users_df['Status'] == "Pending"]
     if not pend_users.empty:
         for idx, row in pend_users.iterrows():
             c1, c2 = st.columns([3, 1])
-            c1.write(f"Account Request: **{row['Username']}**")
+            c1.write(f"Account: **{row['Username']}**")
             if c2.button(f"Approve {row['Username']}"):
                 users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE); log_action(f"Approved {row['Username']}"); st.rerun()
     
-    # Deletion Approvals (Active)
     st.write("---")
-    st.write("### 🗑️ Active Deletion Queue")
-    dq = load_data(APPROVAL_FILE, {"Timestamp":[], "User":[], "Page":[], "RowIndex":[]})
+    st.write("### 🗑️ Deletion Queue")
+    dq = load_data(APPROVAL_FILE, {"Timestamp":[], "User":[], "Page":[], "Details":[]})
     if not dq.empty:
         for i, r in dq.iterrows():
             c1, c2, c3 = st.columns([3, 1, 1])
-            c1.write(f"**{r['User']}** wants to delete from **{r['Page']}**")
+            c1.write(f"**{r['User']}** requested delete from **{r['Page']}**")
             if c2.button("Approve", key=f"app_{i}"):
-                # Execution of Deletion
-                if r['Page'] == "Database": save_data(db_df.iloc[:-1], DB_FILE)
-                elif r['Page'] == "Inventory": save_data(st.session_state.stock.iloc[:-1], STOCK_FILE)
-                elif r['Page'] == "Sales": save_data(st.session_state.sales.iloc[:-1], SALES_FILE)
                 dq = dq.drop(i); save_data(dq, APPROVAL_FILE); log_action(f"Admin approved deletion on {r['Page']}"); st.rerun()
             if c3.button("Reject", key=f"rej_{i}"):
                 dq = dq.drop(i); save_data(dq, APPROVAL_FILE); st.rerun()
