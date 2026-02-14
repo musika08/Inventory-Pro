@@ -75,7 +75,8 @@ users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hash
 db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
 st.session_state.inventory = db_df
 st.session_state.stock = load_data(STOCK_FILE, {"Product Name": ["Item 1"], "Quantity": [0], "Status": ["In Stock"], "Date": [date.today()]})
-st.session_state.sales = load_data(SALES_FILE, {c: [] for c in SALES_ORDER})
+if 'sales' not in st.session_state:
+    st.session_state.sales = load_data(SALES_FILE, {c: [] for c in SALES_ORDER})
 st.session_state.expenditures = load_data(EXPENSE_FILE, {"Date": [], "Item": [], "Cost": []})
 st.session_state.cash_in = load_data(CASH_FILE, {"Date": [], "Source": [], "Amount": []})
 
@@ -216,7 +217,6 @@ elif page == "Inventory":
 elif page == "Sales":
     st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
     
-    # Restore Status and Payment Dropdowns in config
     conf = {
         "Product": st.column_config.SelectboxColumn(options=product_list),
         "Price Tier": st.column_config.SelectboxColumn(options=price_tiers_list),
@@ -228,33 +228,30 @@ elif page == "Sales":
         "Total": st.column_config.NumberColumn(disabled=True, format="₱%.2f")
     }
     
-    # Pre-process current sales data to ensure numeric types
+    # Load and force numeric for math consistency
     sales_df = st.session_state.sales[SALES_ORDER].copy()
     for col in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
 
-    # Use data_editor with corrected config
-    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_v3")
+    # Key is kept static to prevent reset while typing Customer Name
+    ed = st.data_editor(sales_df, use_container_width=True, num_rows="dynamic", column_config=conf, key="sales_editor_fixed")
     
     if not ed.equals(sales_df):
         ndf = ed.copy()
         
-        # Auto-fill and Calculation Loop
         for idx in ndf.index:
             row = ndf.loc[idx]
             prod = row["Product"]
             tier = row["Price Tier"]
             
-            # Check if auto-fill is needed
+            # TRIGGER: Auto-fill if Product and Tier are present
             if pd.notnull(prod) and pd.notnull(tier) and prod != "":
                 match = db_df[db_df["Product Name"] == prod]
                 if not match.empty:
-                    # Database Values
                     u_cost = float(match["Cost per Unit"].values[0])
                     b_cost = float(match["Boxed Cost"].values[0])
                     unit_price = float(match[tier].values[0]) if str(tier) in match.columns else 0.0
                     
-                    # User Inputs (preserved)
                     qty = float(row["Qty"]) if pd.notnull(row["Qty"]) else 1.0
                     disc = float(row["Discount"]) if pd.notnull(row["Discount"]) else 0.0
                     
@@ -262,12 +259,12 @@ elif page == "Sales":
                     ndf.at[idx, "Cost"] = u_cost
                     ndf.at[idx, "Boxed Cost"] = b_cost
                     
-                    # Calculations
+                    # Auto-compute Amount and Profit
                     total_amount = (unit_price - disc) * qty
                     ndf.at[idx, "Total"] = total_amount
                     ndf.at[idx, "Profit"] = total_amount - (b_cost * qty)
                     
-                    # Stock Deduction Logic (Status change)
+                    # Inventory Management
                     if idx < len(st.session_state.sales):
                         old_row = st.session_state.sales.iloc[idx]
                         if row["Status"] == "Sold" and old_row["Status"] != "Sold":
@@ -278,16 +275,15 @@ elif page == "Sales":
                                 can_take = min(needed, s_df.at[s_idx, "Quantity"])
                                 s_df.at[s_idx, "Quantity"] -= can_take; needed -= can_take
                             save_data(s_df, STOCK_FILE)
-                            log_action(f"Auto-deducted {int(qty)} of {prod} from stock.")
 
-        # Save Logic
+        # Deletion check for Musika
         if len(ed) < len(st.session_state.sales):
             if st.session_state.user == "Musika":
                 save_data(ndf, SALES_FILE)
                 st.session_state.sales = ndf
                 st.rerun()
             else:
-                st.warning("Only Musika can delete sales records.")
+                st.warning("Only Musika can delete entries.")
                 st.rerun()
         else:
             save_data(ndf, SALES_FILE)
