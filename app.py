@@ -37,6 +37,7 @@ st.markdown(f"""
     [data-testid="stSidebar"] {{ min-width: 180px !important; max-width: 180px !important; }}
     .stButton > button {{ width: 100% !important; padding: 4px 10px !important; text-align: left !important; font-size: 11px !important; border-radius: 4px !important; }}
     h1 {{ display: block !important; font-size: 1.4rem !important; font-weight: 700 !important; margin-top: 1rem !important; color: #FFFFFF !important; }}
+    hr {{ border: none !important; height: 1px !important; background-color: #333 !important; display: block !important; margin: 8px 0 !important; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -45,9 +46,7 @@ def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 def check_hashes(password, hashed_text):
-    if make_hashes(password) == hashed_text:
-        return True
-    return False
+    return make_hashes(password) == hashed_text
 
 # --- DATA HELPERS ---
 def load_data(file, defaults):
@@ -73,7 +72,9 @@ def log_action(action_desc):
     log_df.to_csv(LOG_FILE, index=False)
 
 # --- USER DB INIT ---
-users_df = load_data(USERS_FILE, {"Username": ["admin"], "Password": [make_hashes("admin123")], "Role": ["Admin"]})
+# Hardcoded primary admin Musika
+primary_admin = {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"]}
+users_df = load_data(USERS_FILE, primary_admin)
 
 # --- SESSION STATE ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
@@ -84,35 +85,20 @@ if 'current_page' not in st.session_state: st.session_state.current_page = "Dash
 # --- LOGIN SCREEN ---
 if not st.session_state.logged_in:
     st.markdown("<h1>🔐 Inventory Pro Login</h1>", unsafe_allow_html=True)
-    tab1, tab2 = st.tabs(["Login", "Create Account"])
-    
-    with tab1:
-        u = st.text_input("Username", key="login_u")
-        p = st.text_input("Password", type="password", key="login_p")
-        if st.button("Login"):
-            res = users_df[users_df['Username'] == u]
-            if not res.empty and check_hashes(p, res.iloc[0]['Password']):
-                st.session_state.logged_in = True
-                st.session_state.user = u
-                st.session_state.role = res.iloc[0]['Role']
-                st.rerun()
-            else:
-                st.error("Invalid Username or Password")
-                
-    with tab2:
-        new_u = st.text_input("New Username")
-        new_p = st.text_input("New Password", type="password")
-        if st.button("Sign Up"):
-            if new_u in users_df['Username'].values:
-                st.warning("User already exists")
-            else:
-                new_user = pd.DataFrame({"Username": [new_u], "Password": [make_hashes(new_p)], "Role": ["Staff"]})
-                users_df = pd.concat([users_df, new_user], ignore_index=True)
-                save_data(users_df, USERS_FILE)
-                st.success("Account created! You can now login.")
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
+    if st.button("Login"):
+        res = users_df[users_df['Username'] == u]
+        if not res.empty and check_hashes(p, res.iloc[0]['Password']):
+            st.session_state.logged_in = True
+            st.session_state.user = u
+            st.session_state.role = res.iloc[0]['Role']
+            st.rerun()
+        else:
+            st.error("Invalid Username or Password")
     st.stop()
 
-# --- MAIN APP START ---
+# --- DATA INITIALIZATION ---
 db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
 st.session_state.inventory = db_df
 st.session_state.stock = load_data(STOCK_FILE, {"Product Name": ["Item 1"], "Quantity": [0], "Status": ["In Stock"], "Date": [date.today()]})
@@ -141,20 +127,35 @@ with st.sidebar:
 
 page = st.session_state.current_page
 
-# --- PAGE: ADMIN (NEW) ---
+# --- PAGE: ADMIN ---
 if page == "Admin" and st.session_state.role == "Admin":
-    st.markdown("<h1>🛡️ User Management</h1>", unsafe_allow_html=True)
-    st.write("Modify user roles or review access.")
+    st.markdown("<h1>🛡️ Admin & User Management</h1>", unsafe_allow_html=True)
     
-    # Edit User Roles
+    with st.container(border=True):
+        st.write("### ➕ Add New User")
+        ac1, ac2, ac3, ac4 = st.columns([2, 2, 1, 1])
+        new_u = ac1.text_input("Username", key="new_u")
+        new_p = ac2.text_input("Password", type="password", key="new_p")
+        new_r = ac3.selectbox("Role", ["Staff", "Admin"], key="new_r")
+        if ac4.button("Add User"):
+            if new_u in users_df['Username'].values:
+                st.error("User already exists!")
+            else:
+                new_user_row = pd.DataFrame({"Username": [new_u], "Password": [make_hashes(new_p)], "Role": [new_r]})
+                users_df = pd.concat([users_df, new_user_row], ignore_index=True)
+                save_data(users_df, USERS_FILE)
+                log_action(f"Admin: Added new user '{new_u}' as {new_r}")
+                st.success(f"User {new_u} added!")
+                st.rerun()
+
+    st.write("### 👥 Manage Users")
     edited_users = st.data_editor(users_df, use_container_width=True, hide_index=True, column_config={
-        "Password": st.column_config.TextColumn(disabled=True),
+        "Password": st.column_config.TextColumn("Password (Hashed)", disabled=True),
         "Role": st.column_config.SelectboxColumn("Role", options=["Admin", "Staff"], required=True)
     })
     if not edited_users.equals(users_df):
         save_data(edited_users, USERS_FILE)
         log_action("Admin: Modified User Database")
-        st.success("User Roles Updated!")
         st.rerun()
 
 # --- PAGE: DASHBOARD ---
@@ -286,7 +287,7 @@ elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
     if st.button("🛡️ Create Backup"):
         b_dir = f"backups/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"; os.makedirs(b_dir, exist_ok=True)
-        for f in [DB_FILE, STOCK_FILE, SALES_FILE, EXPENSE_FILE, CASH_FILE, LOG_FILE]: 
+        for f in [DB_FILE, STOCK_FILE, SALES_FILE, EXPENSE_FILE, CASH_FILE, LOG_FILE, USERS_FILE]: 
             if os.path.exists(f): shutil.copy(f, b_dir)
         st.success("Backup Saved")
     if os.path.exists(LOG_FILE): st.dataframe(pd.read_csv(LOG_FILE), use_container_width=True, hide_index=True)
