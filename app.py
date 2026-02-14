@@ -32,7 +32,7 @@ if not os.path.exists("backups"): os.makedirs("backups")
 
 SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Cost", "Boxed Cost", "Profit", "Discount", "Total", "Status", "Payment"]
 
-# --- DYNAMIC CSS (MAXIMIZED & CLEAN) ---
+# --- DYNAMIC CSS ---
 st.markdown(f"""
     <style>
     html, body, [class*="ViewContainer"] {{ font-size: 12px !important; }}
@@ -167,11 +167,8 @@ if page == "Dashboard":
         s_m = f2.selectbox("Month", ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], index=date.today().month-1)
     
     m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
-    
-    # Filtered Monthly Data
     fs_monthly = dash_sales[(dash_sales["Date"].dt.year == s_y) & (dash_sales["Date"].dt.month == m_idx)]
     paid_monthly = fs_monthly[fs_monthly['Payment'] == 'Paid']
-    
     exp_df = st.session_state.expenditures.copy()
     exp_df["Date"] = pd.to_datetime(exp_df["Date"], errors='coerce')
     monthly_exp_val = exp_df[(exp_df["Date"].dt.year == s_y) & (exp_df["Date"].dt.month == m_idx)]['Cost'].sum()
@@ -181,15 +178,13 @@ if page == "Dashboard":
     margin = (prof / rev * 100) if rev > 0 else 0
     exp_ratio = (monthly_exp_val / rev * 100) if rev > 0 else 0
 
-    # Metric Row (UPDATED LOGIC: Net Money is now based on Paid Revenue/Amount)
     m1, m2, m3, m4 = st.columns(4)
     total_paid_revenue = dash_sales[dash_sales['Payment'] == 'Paid']['Total'].sum()
     total_deposits = st.session_state.cash_in['Amount'].sum()
     total_expenses_all = st.session_state.expenditures['Cost'].sum()
-    
     net_cash_on_hand = (total_deposits + total_paid_revenue) - total_expenses_all
     
-    m1.metric("Total Net Money (Cash)", f"₱{net_cash_on_hand:,.2f}", help="Total Deposits + Paid Sales Revenue - Expenses")
+    m1.metric("Total Net Money", f"₱{net_cash_on_hand:,.2f}")
     m2.metric("Monthly Paid Profit", f"₱{prof:,.2f}")
     m3.metric("Profit Margin %", f"{margin:.1f}%")
     m4.metric("Expense Ratio", f"{exp_ratio:.1f}%")
@@ -213,14 +208,13 @@ if page == "Dashboard":
         fig_comp = go.Figure()
         fig_comp.add_trace(go.Bar(x=[s_m], y=[prof], name='Profit', marker_color='#2ecc71'))
         fig_comp.add_trace(go.Bar(x=[s_m], y=[monthly_exp_val], name='Expenses', marker_color='#e74c3c'))
-        fig_comp.update_layout(barmode='group', template="plotly_dark", height=400, margin=dict(l=10, r=10, t=10, b=10))
+        fig_comp.update_layout(barmode='group', height=400, template="plotly_dark")
         st.plotly_chart(fig_comp, use_container_width=True)
     with g2:
         if not paid_monthly.empty:
             prod_stats = paid_monthly.groupby("Product").agg({"Total":"sum", "Profit":"sum"}).reset_index()
             prod_stats["Margin %"] = (prod_stats["Profit"] / prod_stats["Total"] * 100)
-            fig_margin = px.bar(prod_stats.sort_values("Margin %"), x="Margin %", y="Product", orientation='h', template="plotly_dark", color="Margin %", color_continuous_scale="Viridis")
-            fig_margin.update_layout(height=400, margin=dict(l=10, r=10, t=10, b=10))
+            fig_margin = px.bar(prod_stats.sort_values("Margin %"), x="Margin %", y="Product", orientation='h', template="plotly_dark")
             st.plotly_chart(fig_margin, use_container_width=True)
 
 elif page == "Database":
@@ -233,25 +227,24 @@ elif page == "Database":
     with c2:
         td = st.selectbox("Select Tier to Remove", [""] + price_tiers_list)
         if st.button("Delete Tier"):
-            if td: db_df = db_df.drop(columns=[td]); save_data(db_df, DB_FILE); log_action(f"Removed Tier: '{td}'"); st.rerun()
+            if td: db_df = db_df.drop(columns=[td]); save_data(db_df, DB_FILE); st.rerun()
     
     ed_db = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic", height=600)
-    if len(ed_db) < len(db_df):
-        rem_row = db_df[~db_df.index.isin(ed_db.index)].iloc[0]
-        if st.session_state.role == "Admin": save_data(ed_db, DB_FILE); log_action(f"Admin deleted Product."); st.rerun()
-        else: request_deletion(rem_row, "Database"); st.error("Sent for approval."); st.rerun()
-    elif not ed_db.equals(db_df): save_data(ed_db, DB_FILE); log_action("Updated Database."); st.rerun()
+    if not ed_db.equals(db_df):
+        if len(ed_db) < len(db_df):
+            rem_row = db_df[~db_df.index.isin(ed_db.index)].iloc[0]
+            if st.session_state.role == "Admin": save_data(ed_db, DB_FILE); st.rerun()
+            else: request_deletion(rem_row, "Database"); st.rerun()
+        else: save_data(ed_db, DB_FILE); log_action("Updated DB."); st.rerun()
 
 elif page == "Inventory":
     st.markdown("<h1>📦 Inventory</h1>", unsafe_allow_html=True)
     cl, cr = st.columns([1, 2.5])
     with cl:
-        st.write("### 📊 Quick Tally")
         sdf = st.session_state.stock[st.session_state.stock["Status"] == "In Stock"].groupby("Product Name")["Quantity"].sum().reset_index().sort_values("Quantity")
-        sdf["Status"] = sdf["Quantity"].apply(lambda q: "❌ Out" if q <= 0 else "⚠️ Low" if q < 5 else "✅ Good")
+        sdf["Stat"] = sdf["Quantity"].apply(lambda q: "❌" if q <= 0 else "⚠️" if q < 5 else "✅")
         st.dataframe(sdf, use_container_width=True, hide_index=True, height=600)
     with cr:
-        st.write("### ⚙️ Add Stock Entry")
         f = st.columns([1.2, 1, 1, 1, 0.5])
         c_date, np, nq, ns = f[0].date_input("Date"), f[1].selectbox("Product", product_list), f[2].number_input("Qty", min_value=1), f[3].selectbox("Status", ["In Stock", "Bought"])
         if f[4].button("➕", key="inv_add_btn"):
@@ -259,109 +252,93 @@ elif page == "Inventory":
             st.session_state.stock = pd.concat([st.session_state.stock, nr], ignore_index=True); save_data(st.session_state.stock, STOCK_FILE); st.rerun()
         
         ed_s = st.data_editor(st.session_state.stock.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
-        if len(ed_s) < len(st.session_state.stock):
-            orig = st.session_state.stock.copy().iloc[::-1]
-            rem_row = orig[~orig.index.isin(ed_s.index)].iloc[0]
-            if st.session_state.role == "Admin": save_data(ed_s.iloc[::-1], STOCK_FILE); log_action("Admin deleted Stock."); st.rerun()
-            else: request_deletion(rem_row, "Inventory"); st.error("Requested."); st.rerun()
-        elif not ed_s.equals(st.session_state.stock.iloc[::-1]): save_data(ed_s.iloc[::-1], STOCK_FILE); st.rerun()
+        if not ed_s.equals(st.session_state.stock.iloc[::-1]):
+            save_data(ed_s.iloc[::-1], STOCK_FILE); st.rerun()
 
 elif page == "Sales":
     st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
     with st.container(border=True):
         st.write("### ➕ Quick Sale Entry")
         sf = st.columns([1, 1.2, 1.5, 0.8, 1, 0.5])
-        s_date = sf[0].date_input("Date", value=date.today())
-        s_cust = sf[1].text_input("Customer Name", placeholder="...")
-        s_prod = sf[2].selectbox("Product", [""] + product_list)
-        s_qty = sf[3].number_input("Qty", min_value=1)
-        s_tier = sf[4].selectbox("Tier", [""] + price_tiers_list)
-        
-        if sf[5].button("➕", key="sales_add_btn"):
+        s_date, s_cust, s_prod, s_qty, s_tier = sf[0].date_input("Date"), sf[1].text_input("Customer"), sf[2].selectbox("Product", [""]+product_list), sf[3].number_input("Qty", min_value=1), sf[4].selectbox("Tier", [""]+price_tiers_list)
+        if sf[5].button("➕", key="s_add"):
             if s_prod and s_tier:
                 match = db_df[db_df["Product Name"] == s_prod]
-                if not match.empty:
-                    u_c = float(match["Cost per Unit"].values[0])
-                    b_c = float(match["Boxed Cost"].values[0])
-                    u_p = float(match[s_tier].values[0]) if s_tier in match.columns else 0.0
-                    
-                    calc_total = u_p * s_qty
-                    calc_profit = calc_total - (b_c * s_qty)
-                    
-                    new_row = pd.DataFrame([{
-                        "Date": s_date, "Customer": s_cust, "Product": s_prod, "Qty": s_qty, 
-                        "Price Tier": s_tier, "Cost": u_c, "Boxed Cost": b_c, "Profit": calc_profit, 
-                        "Discount": 0.0, "Total": calc_total, "Status": "Pending", "Payment": "Unpaid"
-                    }])
-                    st.session_state.sales = pd.concat([st.session_state.sales, new_row], ignore_index=True)
-                    save_data(st.session_state.sales, SALES_FILE)
-                    log_action(f"Sale Added & Computed: {s_cust} | {s_prod}")
-                    st.rerun()
+                u_c, b_c, u_p = float(match["Cost per Unit"].values[0]), float(match["Boxed Cost"].values[0]), float(match[s_tier].values[0])
+                calc_tot = u_p * s_qty
+                new_row = pd.DataFrame([{"Date": s_date, "Customer": s_cust, "Product": s_prod, "Qty": s_qty, "Price Tier": s_tier, "Cost": u_c, "Boxed Cost": b_c, "Profit": calc_tot - (b_c * s_qty), "Discount": 0.0, "Total": calc_tot, "Status": "Pending", "Payment": "Unpaid"}])
+                st.session_state.sales = pd.concat([st.session_state.sales, new_row], ignore_index=True); save_data(st.session_state.sales, SALES_FILE); st.rerun()
 
     conf = {
         "Date": st.column_config.DateColumn("Date", required=True),
-        "Customer": st.column_config.TextColumn("Customer"),
         "Product": st.column_config.SelectboxColumn("Product", options=product_list),
         "Price Tier": st.column_config.SelectboxColumn("Price Tier", options=price_tiers_list),
         "Status": st.column_config.SelectboxColumn("Status", options=["Pending", "Sold", "Cancelled"]),
         "Payment": st.column_config.SelectboxColumn("Payment", options=["Unpaid", "Paid"]),
-        "Cost": st.column_config.NumberColumn("Cost", disabled=True, format="₱%.2f"),
-        "Boxed Cost": st.column_config.NumberColumn("Boxed Cost", disabled=True, format="₱%.2f"),
-        "Profit": st.column_config.NumberColumn("Profit", disabled=True, format="₱%.2f"),
-        "Total": st.column_config.NumberColumn("Total", disabled=True, format="₱%.2f")
+        "Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
+        "Boxed Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
+        "Profit": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
+        "Total": st.column_config.NumberColumn(disabled=True, format="₱%.2f")
     }
+    
+    # Reverse view for editor
     view = st.session_state.sales.copy().iloc[::-1]
-    for c in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]: view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
+    for c in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
+        view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
 
-    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v21", height=600)
+    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_editor_v22", height=600)
     
     if not ed_sales.equals(view):
         ndf = ed_sales.copy()
+        # Handle Deletions
         if len(ed_sales) < len(view):
             rem = view[~view.index.isin(ed_sales.index)].iloc[0]
-            if st.session_state.role == "Admin":
+            if st.session_state.role == "Admin": 
                 save_data(ed_sales.iloc[::-1], SALES_FILE); st.session_state.sales = ed_sales.iloc[::-1]; st.rerun()
-            else: request_deletion(rem, "Sales"); st.error("Deletion requested."); st.rerun()
-
+            else: request_deletion(rem, "Sales"); st.rerun()
+        
+        # Sync Status & Math
         for idx in ndf.index:
             row = ndf.loc[idx]
-            old = view.loc[idx] if idx in view.index else None
+            old_row = view.loc[idx] if idx in view.index else None
             prod, tier = row["Product"], row["Price Tier"]
+            
+            # Recalculate
             if prod and tier:
                 match = db_df[db_df["Product Name"] == prod]
                 if not match.empty:
-                    u_c, b_c = float(match["Cost per Unit"].values[0]), float(match["Boxed Cost"].values[0])
-                    u_p = float(match[tier].values[0]) if str(tier) in match.columns else 0.0
-                    q, d = float(row["Qty"]), float(row["Discount"])
-                    tot, prf = (u_p - d) * q, ((u_p - d) * q) - (b_c * q)
-                    if row["Total"] != tot or row["Profit"] != prf:
-                        ndf.at[idx, "Cost"], ndf.at[idx, "Boxed Cost"], ndf.at[idx, "Total"], ndf.at[idx, "Profit"] = u_c, b_c, tot, prf
+                    u_c, b_c, u_p = float(match["Cost per Unit"].values[0]), float(match["Boxed Cost"].values[0]), float(match[tier].values[0])
+                    qty, disc = float(row["Qty"]), float(row["Discount"])
+                    tot, prf = (u_p - disc) * qty, ((u_p - disc) * qty) - (b_c * qty)
+                    ndf.at[idx, "Cost"], ndf.at[idx, "Boxed Cost"], ndf.at[idx, "Total"], ndf.at[idx, "Profit"] = u_c, b_c, tot, prf
             
-            if old is not None and row["Status"] == "Sold" and old["Status"] != "Sold":
+            # Inventory deduction on "Sold"
+            if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
                 s_df = st.session_state.stock.copy()
-                need = int(row["Qty"])
+                needed = int(row["Qty"])
                 mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
                 available = s_df[mask].index
-                if s_df.loc[available, "Quantity"].sum() >= need:
-                    for s_idx in available:
-                        if needed <= 0: break
-                        take = min(need, s_df.at[s_idx, "Quantity"])
-                        s_df.at[s_idx, "Quantity"] -= take; need -= take
-                    st.session_state.stock = s_df; save_data(s_df, STOCK_FILE); log_action(f"Stock Subtracted: {row['Qty']} {prod}")
-                else: st.error("Out of Stock!")
-        save_data(ndf.iloc[::-1], SALES_FILE); st.session_state.sales = ndf.iloc[::-1]; st.rerun()
+                for s_idx in available:
+                    if needed <= 0: break
+                    take = min(needed, s_df.at[s_idx, "Quantity"])
+                    s_df.at[s_idx, "Quantity"] -= take; needed -= take
+                st.session_state.stock = s_df; save_data(s_df, STOCK_FILE)
+
+        # Re-reverse and save permanently
+        final_to_save = ndf.iloc[::-1]
+        save_data(final_to_save, SALES_FILE)
+        st.session_state.sales = final_to_save
+        st.rerun()
 
 elif page == "Expenditures":
     st.markdown("<h1>💸 Expenditures</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
-        st.write("### ➖ Log Expense")
         ex_d, it, ct = st.date_input("Ex Date"), st.text_input("Ex Item"), st.number_input("Ex Cost", min_value=0.0)
         if st.button("Add Expense", key="ex_btn"):
             new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
             st.session_state.expenditures = pd.concat([st.session_state.expenditures, new]); save_data(st.session_state.expenditures, EXPENSE_FILE); st.rerun()
     with c2:
-        st.write("### ➕ Log Deposit")
         in_d, src, amt = st.date_input("Dep Date"), st.text_input("Dep Source"), st.number_input("Dep Amount", min_value=0.0)
         if st.button("Add Deposit", key="dep_btn"):
             new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
@@ -372,23 +349,15 @@ elif page == "Expenditures":
     with l:
         v_ex = st.session_state.expenditures.copy().iloc[::-1]
         ed_ex = st.data_editor(v_ex, use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
-        if len(ed_ex) < len(v_ex):
-            rem = v_ex[~v_ex.index.isin(ed_ex.index)].iloc[0]
-            if st.session_state.role == "Admin": save_data(ed_ex.iloc[::-1], EXPENSE_FILE); st.rerun()
-            else: request_deletion(rem, "Expense"); st.error("Requested."); st.rerun()
-        elif not ed_ex.equals(v_ex): save_data(ed_ex.iloc[::-1], EXPENSE_FILE); st.rerun()
+        if not ed_ex.equals(v_ex): save_data(ed_ex.iloc[::-1], EXPENSE_FILE); st.rerun()
     with r:
         v_in = st.session_state.cash_in.copy().iloc[::-1]
         ed_in = st.data_editor(v_in, use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
-        if len(ed_in) < len(v_in):
-            rem = v_in[~v_in.index.isin(ed_in.index)].iloc[0]
-            if st.session_state.role == "Admin": save_data(ed_in.iloc[::-1], CASH_FILE); st.rerun()
-            else: request_deletion(rem, "Deposit"); st.error("Requested."); st.rerun()
-        elif not ed_in.equals(v_in): save_data(ed_in.iloc[::-1], CASH_FILE); st.rerun()
+        if not ed_in.equals(v_in): save_data(ed_in.iloc[::-1], CASH_FILE); st.rerun()
 
 elif page == "Admin" and st.session_state.role == "Admin":
     st.markdown("<h1>🛡️ Admin Control</h1>", unsafe_allow_html=True)
-    t1, t2, t3 = st.tabs(["User Requests", "User Roles", "Deletion Approvals"])
+    t1, t2, t3 = st.tabs(["Requests", "Roles", "Deletions"])
     with t1:
         pend = users_df[users_df['Status'] == "Pending"]
         for idx, row in pend.iterrows():
@@ -414,14 +383,13 @@ elif page == "Admin" and st.session_state.role == "Admin":
             with st.container(border=True):
                 st.write(f"**{row['Page']}** | {row['User']} | {row['Request Date']}")
                 st.code(row['Details'])
-                c1, c2 = st.columns(2)
-                if c1.button("Confirm Deletion", key=f"conf_del_{idx}"):
+                if st.button("Confirm Deletion", key=f"conf_del_{idx}"):
                     reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
-                if c2.button("Reject / Restore", key=f"rest_{idx}"):
+                if st.button("Restore / Reject", key=f"rest_{idx}"):
                     reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
 
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
-    st.dataframe(load_data(LOG_FILE, {}), use_container_width=True, hide_index=True, column_config={"Identity": st.column_config.TextColumn("User", width="small"), "Action Detail": st.column_config.TextColumn("Details", width="large")}, height=800)
-    if st.session_state.role == "Admin" and st.button("🗑️ Clear Logs"):
+    st.dataframe(load_data(LOG_FILE, {}), use_container_width=True, hide_index=True, height=800)
+    if st.session_state.role == "Admin" and st.button("Clear Logs"):
         save_data(pd.DataFrame(columns=["Timestamp", "Identity", "Action Detail"]), LOG_FILE); st.rerun()
