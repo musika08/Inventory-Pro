@@ -169,31 +169,47 @@ if page == "Dashboard":
     # Monthly Expenditures
     exp_df = st.session_state.expenditures.copy()
     exp_df["Date"] = pd.to_datetime(exp_df["Date"], errors='coerce')
-    monthly_exp = exp_df[(exp_df["Date"].dt.year == s_y) & (exp_df["Date"].dt.month == m_idx)]['Cost'].sum()
+    monthly_exp_val = exp_df[(exp_df["Date"].dt.year == s_y) & (exp_df["Date"].dt.month == m_idx)]['Cost'].sum()
     
     # Advanced Calculations
     rev = paid_monthly['Total'].sum()
     prof = paid_monthly['Profit'].sum()
     margin = (prof / rev * 100) if rev > 0 else 0
-    exp_ratio = (monthly_exp / rev * 100) if rev > 0 else 0
+    exp_ratio = (monthly_exp_val / rev * 100) if rev > 0 else 0
 
-    # Metric Row 1
+    # Metric Row
     m1, m2, m3, m4 = st.columns(4)
     total_paid_profit = dash_sales[dash_sales['Payment'] == 'Paid']['Profit'].sum()
     net_cash = (st.session_state.cash_in['Amount'].sum() + total_paid_profit) - st.session_state.expenditures['Cost'].sum()
     
     m1.metric("Total Net Money", f"₱{net_cash:,.2f}")
     m2.metric("Monthly Paid Profit", f"₱{prof:,.2f}")
-    m3.metric("Monthly Paid Revenue", f"₱{rev:,.2f}")
-    m4.metric("Unpaid Balance (Month)", f"₱{fs_monthly[fs_monthly['Payment']=='Unpaid']['Total'].sum():,.2f}")
+    m3.metric("Profit Margin %", f"{margin:.1f}%")
+    m4.metric("Expense Ratio", f"{exp_ratio:.1f}%")
 
-    # Advanced Analytic Metrics Row
+    # --- GRAPHS SECTION ---
     st.write("---")
-    st.write("### 🎯 Profit & ROI Analytics")
-    a1, a2, a3 = st.columns(3)
-    a1.metric("Profit Margin %", f"{margin:.1f}%", help="Percentage of revenue that is profit.")
-    a2.metric("Monthly Expenses", f"₱{monthly_exp:,.2f}")
-    a3.metric("Expense-to-Income Ratio", f"{exp_ratio:.1f}%", delta=f"{exp_ratio:.1f}%", delta_color="inverse", help="What % of revenue is spent on expenses.")
+    g1, g2 = st.columns(2)
+
+    with g1:
+        st.write("### ⚖️ Profit vs. Expenses")
+        fig_comp = go.Figure()
+        fig_comp.add_trace(go.Bar(x=[s_m], y=[prof], name='Paid Profit', marker_color='#2ecc71'))
+        fig_comp.add_trace(go.Bar(x=[s_m], y=[monthly_exp_val], name='Expenses', marker_color='#e74c3c'))
+        fig_comp.update_layout(barmode='group', template="plotly_dark", height=300, margin=dict(l=20, r=20, t=20, b=20))
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+    with g2:
+        st.write("### 📈 Margin by Product")
+        if not paid_monthly.empty:
+            prod_stats = paid_monthly.groupby("Product").agg({"Total":"sum", "Profit":"sum"}).reset_index()
+            prod_stats["Margin %"] = (prod_stats["Profit"] / prod_stats["Total"] * 100)
+            fig_margin = px.bar(prod_stats.sort_values("Margin %"), x="Margin %", y="Product", orientation='h', 
+                                template="plotly_dark", color="Margin %", color_continuous_scale="Viridis")
+            fig_margin.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20))
+            st.plotly_chart(fig_margin, use_container_width=True)
+        else:
+            st.info("No paid sales data for this month to show margins.")
 
     
 
@@ -286,7 +302,7 @@ elif page == "Sales":
     for col in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
     
-    ed = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v12")
+    ed = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v13")
     if not ed.equals(sales_df):
         ndf = ed.copy()
         needs_rerun = False
