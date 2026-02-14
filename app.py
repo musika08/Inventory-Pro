@@ -59,14 +59,19 @@ def make_hashes(password):
 def check_hashes(password, hashed_text):
     return make_hashes(password) == hashed_text
 
-# --- DATA HELPERS ---
+# --- DATA HELPERS (FIXED FOR EMPTY FILES) ---
 def load_data(file, defaults):
     if os.path.exists(file):
-        df = pd.read_csv(file)
-        if "Date" in df.columns:
-            df["Date"] = pd.to_datetime(df["Date"], errors='coerce').dt.date
-            df["Date"] = df["Date"].fillna(date.today())
-        return df
+        try:
+            # Check if file is empty first to prevent Pandas crash
+            if os.path.getsize(file) > 0:
+                df = pd.read_csv(file)
+                if not df.empty and "Date" in df.columns:
+                    df["Date"] = pd.to_datetime(df["Date"], errors='coerce').dt.date
+                    df["Date"] = df["Date"].fillna(date.today())
+                return df
+        except Exception:
+            pass # Revert to defaults if reading fails
     return pd.DataFrame(defaults)
 
 def save_data(df, file):
@@ -76,7 +81,7 @@ def log_action(action_desc):
     user = st.session_state.get('user', 'System')
     now = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
     new_log = pd.DataFrame({"Timestamp": [now], "User": [user], "Detailed Action": [action_desc]})
-    if os.path.exists(LOG_FILE):
+    if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
         try:
             log_df = pd.concat([new_log, pd.read_csv(LOG_FILE)], ignore_index=True)
         except:
@@ -197,31 +202,23 @@ elif page == "Dashboard":
 # --- DATABASE ---
 elif page == "Database":
     st.markdown("<h1>📂 Database</h1>", unsafe_allow_html=True)
-    
-    # Section: Manage Tiers
     col_add, col_del = st.columns(2)
     with col_add:
         st.write("### ➕ Add Price Tier")
         t1, t2 = st.columns([3, 1])
-        nt = t1.text_input("New Tier Name", key="new_t_name")
+        nt = t1.text_input("New Tier Name")
         if t2.button("Add"):
             if nt and nt not in db_df.columns:
                 db_df[nt] = 0.0; save_data(db_df, DB_FILE); log_action(f"📂 Added Tier {nt}"); st.rerun()
-            elif nt in db_df.columns: st.warning("Tier already exists.")
-    
     with col_del:
         st.write("### 🗑️ Remove Price Tier")
         d1, d2 = st.columns([3, 1])
-        tier_to_del = d1.selectbox("Select Tier to Remove", [""] + price_tiers_list)
+        tier_to_del = d1.selectbox("Select Tier", [""] + price_tiers_list)
         if d2.button("Delete"):
-            if tier_to_del and tier_to_del in db_df.columns:
+            if tier_to_del:
                 db_df = db_df.drop(columns=[tier_to_del])
-                save_data(db_df, DB_FILE)
-                log_action(f"📂 Deleted Tier {tier_to_del}")
-                st.rerun()
-
+                save_data(db_df, DB_FILE); log_action(f"📂 Deleted Tier {tier_to_del}"); st.rerun()
     st.write("---")
-    st.write("### 📝 Master Product Table")
     ed = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic")
     if not ed.equals(db_df): save_data(ed, DB_FILE); log_action("DB Table Updated"); st.rerun()
 
@@ -264,8 +261,8 @@ elif page == "Sales":
                 old = st.session_state.sales.iloc[idx] if idx < len(st.session_state.sales) else None
                 if row["Status"] == "Sold" and (old is None or old["Status"] != "Sold"):
                     s, need = st.session_state.stock, int(qty)
-                    msk = (s["Product Name"] == row["Product"]) & (s["Status"] == "In Stock") & (s["Quantity"] > 0)
-                    for ti in s[msk].index:
+                    mask = (s["Product Name"] == row["Product"]) & (s["Status"] == "In Stock") & (s["Quantity"] > 0)
+                    for ti in s[mask].index:
                         if need <= 0: break
                         tk = min(need, s.at[ti, "Quantity"]); s.at[ti, "Quantity"] -= tk; need -= tk
                     save_data(s, STOCK_FILE); log_action(f"🟢 [SOLD] {int(qty)} of {row['Product']}")
@@ -291,4 +288,5 @@ elif page == "Log":
         for f in [DB_FILE, STOCK_FILE, SALES_FILE, EXPENSE_FILE, CASH_FILE, LOG_FILE, USERS_FILE]: 
             if os.path.exists(f): shutil.copy(f, b)
         st.success("Backup Saved")
-    if os.path.exists(LOG_FILE): st.dataframe(pd.read_csv(LOG_FILE), use_container_width=True, hide_index=True)
+    if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0: 
+        st.dataframe(pd.read_csv(LOG_FILE), use_container_width=True, hide_index=True)
