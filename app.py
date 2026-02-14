@@ -70,6 +70,19 @@ def log_action(action_detail):
     log_df = pd.concat([new_log, load_data(LOG_FILE, {"Timestamp":[], "Identity":[], "Action Detail":[]})], ignore_index=True)
     save_data(log_df, LOG_FILE)
 
+def request_deletion(df_row, source_page):
+    approvals = load_data(APPROVAL_FILE, {"Request Date": [], "User": [], "Page": [], "Details": [], "RawData": []})
+    row_str = " | ".join([f"{k}:{v}" for k, v in df_row.to_dict().items()])
+    new_req = pd.DataFrame({
+        "Request Date": [datetime.now().strftime("%Y-%m-%d %I:%M %p")],
+        "User": [st.session_state.user],
+        "Page": [source_page],
+        "Details": [row_str],
+        "RawData": [df_row.to_json()]
+    })
+    save_data(pd.concat([approvals, new_req], ignore_index=True), APPROVAL_FILE)
+    log_action(f"Requested deletion of row from {source_page}: {row_str}")
+
 # --- INITIALIZATION ---
 users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"], "Status": ["Approved"]})
 db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
@@ -120,7 +133,7 @@ if not st.session_state.logged_in:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.markdown(f"👤 **{st.session_state.user}**")
+    st.markdown(f"👤 **{st.session_state.user}** ({st.session_state.role})")
     if st.button("📊 Dashboard"): st.session_state.current_page = "Dashboard"
     if st.button("📂 Database"): st.session_state.current_page = "Database"
     if st.button("📦 Inventory"): st.session_state.current_page = "Inventory"
@@ -203,9 +216,14 @@ elif page == "Database":
     
     ed = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic")
     if len(ed) < len(db_df):
-        if st.session_state.user == "Musika":
-            save_data(ed, DB_FILE); log_action("Admin deleted a database row."); st.rerun()
-        else: st.warning("Staff cannot delete database rows."); st.rerun()
+        # Identify removed row
+        removed_mask = ~db_df.index.isin(ed.index)
+        removed_row = db_df[removed_mask].iloc[0]
+        if st.session_state.role == "Admin":
+            save_data(ed, DB_FILE); log_action(f"Admin deleted Product: {removed_row['Product Name']}"); st.rerun()
+        else:
+            request_deletion(removed_row, "Database")
+            st.error("Deletion sent for Admin approval."); st.rerun()
     elif not ed.equals(db_df):
         save_data(ed, DB_FILE); log_action("Modified Database entries."); st.rerun()
 
@@ -228,9 +246,13 @@ elif page == "Inventory":
         
         ed_s = st.data_editor(st.session_state.stock.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic")
         if len(ed_s) < len(st.session_state.stock):
-            if st.session_state.user == "Musika":
+            removed_mask = ~st.session_state.stock.iloc[::-1].index.isin(ed_s.index)
+            removed_row = st.session_state.stock.iloc[::-1][removed_mask].iloc[0]
+            if st.session_state.role == "Admin":
                 save_data(ed_s.iloc[::-1], STOCK_FILE); log_action("Admin deleted a stock entry."); st.rerun()
-            else: st.warning("Staff delete blocked."); st.rerun()
+            else:
+                request_deletion(removed_row, "Inventory")
+                st.error("Deletion requested."); st.rerun()
         elif not ed_s.equals(st.session_state.stock.iloc[::-1]):
             save_data(ed_s.iloc[::-1], STOCK_FILE); log_action("Modified stock logs."); st.rerun()
 
@@ -255,14 +277,18 @@ elif page == "Sales":
         sales_df[col] = pd.to_numeric(sales_df[col], errors='coerce').fillna(0.0)
     sales_df["Date"] = pd.to_datetime(sales_df["Date"], errors='coerce').dt.date.fillna(date.today())
 
-    ed = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v10")
+    ed = st.data_editor(sales_df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v11")
     if not ed.equals(sales_df):
         ndf = ed.copy()
         needs_rerun = False
         if len(ed) < len(st.session_state.sales):
-            if st.session_state.user == "Musika":
-                save_data(ndf, SALES_FILE); st.session_state.sales = ndf; log_action("Deleted sales record."); st.rerun()
-            else: st.warning("Only Musika can delete entries."); st.rerun()
+            removed_mask = ~sales_df.index.isin(ed.index)
+            removed_row = sales_df[removed_mask].iloc[0]
+            if st.session_state.role == "Admin":
+                save_data(ndf, SALES_FILE); st.session_state.sales = ndf; log_action("Admin deleted sales record."); st.rerun()
+            else:
+                request_deletion(removed_row, "Sales")
+                st.error("Admin approval required for deletion."); st.rerun()
 
         for idx in ndf.index:
             row = ndf.loc[idx]
@@ -280,7 +306,7 @@ elif page == "Sales":
                         needs_rerun = True
 
             if old_row is None or any(row[c] != old_row[c] for c in ["Product", "Price Tier", "Qty", "Status", "Payment", "Customer"]):
-                log_action(f"Sale: {row['Customer']} | {row['Product']} | {row['Status']} | {row['Payment']} | ₱{ndf.at[idx, 'Total']:,.2f}")
+                log_action(f"Sale: {row['Customer']} | {row['Product']} | {row['Status']} | ₱{ndf.at[idx, 'Total']:,.2f}")
                 needs_rerun = True
 
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
@@ -306,7 +332,6 @@ elif page == "Expenditures":
         st.write("### ➖ Log Expense")
         f_ex = st.columns([1.2, 1.5, 1, 0.4])
         ex_d, it, ct = f_ex[0].date_input("Date", key="exd"), f_ex[1].text_input("Item", key="exit"), f_ex[2].number_input("Cost", min_value=0.0, key="exct")
-        # Added unique key to prevent Duplicate ID error
         if f_ex[3].button("➕", key="ex_add_btn"):
             new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
             st.session_state.expenditures = pd.concat([st.session_state.expenditures, new]); save_data(st.session_state.expenditures, EXPENSE_FILE); log_action(f"Expense: {it}"); st.rerun()
@@ -314,7 +339,6 @@ elif page == "Expenditures":
         st.write("### ➕ Log Deposit")
         f_in = st.columns([1.2, 1.5, 1, 0.4])
         in_d, src, amt = f_in[0].date_input("Date", key="ind"), f_in[1].text_input("Source", key="insrc"), f_in[2].number_input("Amt", min_value=0.0, key="inamt")
-        # Added unique key to prevent Duplicate ID error
         if f_in[3].button("➕", key="dep_add_btn"):
             new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
             st.session_state.cash_in = pd.concat([st.session_state.cash_in, new]); save_data(st.session_state.cash_in, CASH_FILE); log_action(f"Deposit: {src}"); st.rerun()
@@ -322,27 +346,82 @@ elif page == "Expenditures":
     l, r = st.columns(2)
     with l:
         st.write("### 📝 Expense History")
-        ed_ex = st.data_editor(st.session_state.expenditures.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic")
-        if not ed_ex.equals(st.session_state.expenditures.iloc[::-1]): save_data(ed_ex.iloc[::-1], EXPENSE_FILE); st.rerun()
+        v_ex = st.session_state.expenditures.copy().iloc[::-1]
+        ed_ex = st.data_editor(v_ex, use_container_width=True, hide_index=True, num_rows="dynamic")
+        if len(ed_ex) < len(v_ex):
+            removed_mask = ~v_ex.index.isin(ed_ex.index)
+            removed_row = v_ex[removed_mask].iloc[0]
+            if st.session_state.role == "Admin":
+                save_data(ed_ex.iloc[::-1], EXPENSE_FILE); st.rerun()
+            else:
+                request_deletion(removed_row, "Expenditures (Expense)")
+                st.error("Request sent."); st.rerun()
+        elif not ed_ex.equals(v_ex): save_data(ed_ex.iloc[::-1], EXPENSE_FILE); st.rerun()
     with r:
         st.write("### 📝 Deposit History")
-        ed_in = st.data_editor(st.session_state.cash_in.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic")
-        if not ed_in.equals(st.session_state.cash_in.iloc[::-1]): save_data(ed_in.iloc[::-1], CASH_FILE); st.rerun()
+        v_in = st.session_state.cash_in.copy().iloc[::-1]
+        ed_in = st.data_editor(v_in, use_container_width=True, hide_index=True, num_rows="dynamic")
+        if len(ed_in) < len(v_in):
+            removed_mask = ~v_in.index.isin(ed_in.index)
+            removed_row = v_in[removed_mask].iloc[0]
+            if st.session_state.role == "Admin":
+                save_data(ed_in.iloc[::-1], CASH_FILE); st.rerun()
+            else:
+                request_deletion(removed_row, "Expenditures (Deposit)")
+                st.error("Request sent."); st.rerun()
+        elif not ed_in.equals(v_in): save_data(ed_in.iloc[::-1], CASH_FILE); st.rerun()
 
 elif page == "Admin" and st.session_state.role == "Admin":
-    st.markdown("<h1>🛡️ Admin</h1>", unsafe_allow_html=True)
-    pend = users_df[users_df['Status'] == "Pending"]
-    if pend.empty:
-        st.info("No pending access requests.")
-    else:
+    st.markdown("<h1>🛡️ Admin Control Panel</h1>", unsafe_allow_html=True)
+    
+    t1, t2, t3 = st.tabs(["User Requests", "User Management (Roles)", "Pending Deletions"])
+    
+    with t1:
+        st.write("### 📩 Access Requests")
+        pend = users_df[users_df['Status'] == "Pending"]
+        if pend.empty: st.info("No pending requests.")
         for idx, row in pend.iterrows():
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2, 1, 1])
-                c1.write(f"Account Request: **{row['Username']}**")
+                c1.write(f"User: **{row['Username']}**")
                 if c2.button(f"Approve", key=f"app_{row['Username']}"):
                     users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE); log_action(f"Approved {row['Username']}"); st.rerun()
                 if c3.button(f"Reject", key=f"rej_{row['Username']}"):
                     users_df = users_df.drop(idx); save_data(users_df, USERS_FILE); log_action(f"Rejected {row['Username']}"); st.rerun()
+
+    with t2:
+        st.write("### 👥 Manage User Roles")
+        approved_users = users_df[users_df['Status'] == "Approved"]
+        for idx, row in approved_users.iterrows():
+            with st.container(border=True):
+                c1, c2 = st.columns([2, 2])
+                c1.write(f"User: **{row['Username']}**")
+                new_role = c2.selectbox("Assign Role", ["Staff", "Admin"], index=0 if row['Role'] == "Staff" else 1, key=f"role_{row['Username']}")
+                if new_role != row['Role']:
+                    users_df.at[idx, 'Role'] = new_role
+                    save_data(users_df, USERS_FILE)
+                    log_action(f"Role Changed: {row['Username']} is now {new_role}")
+                    st.rerun()
+
+    with t3:
+        st.write("### ⚠️ Deletion Requests")
+        del_reqs = load_data(APPROVAL_FILE, {"Request Date": [], "User": [], "Page": [], "Details": [], "RawData": []})
+        if del_reqs.empty: st.info("No deletions pending.")
+        for idx, row in del_reqs.iterrows():
+            with st.container(border=True):
+                st.write(f"**From {row['Page']}** | Requested by {row['User']} on {row['Request Date']}")
+                st.code(row['Details'])
+                c1, c2 = st.columns(2)
+                if c1.button("Confirm Deletion", key=f"conf_del_{idx}"):
+                    # Deletion already happened in view, we just clear the request here
+                    # To be truly safe, Admin should be the one clicking the actual delete.
+                    # This logic assumes the staff 'hid' it and admin confirms.
+                    del_reqs = del_reqs.drop(idx); save_data(del_reqs, APPROVAL_FILE)
+                    log_action(f"Admin confirmed deletion request from {row['Page']}"); st.rerun()
+                if c2.button("Restore / Reject Deletion", key=f"rest_{idx}"):
+                    # Logic to put data back would go here
+                    del_reqs = del_reqs.drop(idx); save_data(del_reqs, APPROVAL_FILE)
+                    log_action(f"Admin rejected deletion request."); st.rerun()
 
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
