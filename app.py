@@ -63,31 +63,27 @@ def sync_to_google(df, sheet_name):
         # Convert dates to string for JSON compatibility and fill NaNs
         df_sync = df.copy()
         for col in df_sync.columns:
-            if pd.api.types.is_datetime64_any_dtype(df_sync[col]) or "date" in col.lower():
+            if pd.api.types.is_datetime64_any_dtype(df_sync[col]) or pd.api.types.is_extension_array_dtype(df_sync[col]):
                 df_sync[col] = df_sync[col].astype(str)
             df_sync[col] = df_sync[col].fillna("")
         
         data = df_sync.to_dict(orient='records')
-        payload = {"sheet": sheet_name, "data": data}
-        response = requests.post(GSHEET_API_URL, json=payload, timeout=15)
+        payload = {"sheet": sheet_name, "data": data, "action": "update"}
+        response = requests.post(GSHEET_API_URL, json=payload, timeout=8)
         
         if response.status_code == 200:
             st.session_state.last_sync = datetime.now().strftime("%I:%M:%S %p")
             return True
         return False
-    except Exception as e:
-        st.session_state.sync_error = str(e)
-        return False
+    except:
+        pass 
 
 def fetch_from_google(sheet_name):
-    """Pulls data from Google Sheets"""
+    """Pulls data from Google Sheets (Requires GET handling in Apps Script)"""
     try:
-        response = requests.get(f"{GSHEET_API_URL}?sheet={sheet_name}", timeout=15)
+        response = requests.get(f"{GSHEET_API_URL}?sheet={sheet_name}", timeout=10)
         if response.status_code == 200:
-            data = response.json().get("data", [])
-            if data:
-                return pd.DataFrame(data)
-        return None
+            return pd.DataFrame(response.json().get("data", []))
     except:
         return None
 
@@ -135,8 +131,6 @@ def request_deletion(df_row, source_page):
 
 # --- INITIALIZATION ---
 if 'last_sync' not in st.session_state: st.session_state.last_sync = "Never"
-if 'sync_error' not in st.session_state: st.session_state.sync_error = None
-
 users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"], "Status": ["Approved"]})
 db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
 st.session_state.inventory = db_df
@@ -203,8 +197,6 @@ with st.sidebar:
             
     st.write("---")
     st.write(f"☁️ Cloud Sync: **{st.session_state.last_sync}**")
-    if st.session_state.sync_error:
-        st.caption(f"⚠️ Sync Note: {st.session_state.sync_error[:25]}...")
     if st.button("🚪 Logout"): 
         cookie_manager.delete("inv_pro_user"); log_action("Logged out."); st.session_state.logged_in = False; st.rerun()
 
@@ -216,8 +208,10 @@ if page == "Dashboard":
         f1, f2 = st.columns(2)
         dash_sales = st.session_state.sales.copy()
         dash_sales["Date"] = pd.to_datetime(dash_sales["Date"], errors='coerce')
-        y_list = sorted(dash_sales["Date"].dt.year.dropna().unique().tolist(), reverse=True) or [date.today().year]
-        s_y, s_m = f1.selectbox("Year", y_list), f2.selectbox("Month", ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], index=date.today().month-1)
+        y_list = sorted(dash_sales["Date"].dt.year.dropna().unique().tolist(), reverse=True)
+        if not y_list: y_list = [date.today().year]
+        s_y = f1.selectbox("Year", y_list)
+        s_m = f2.selectbox("Month", ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], index=date.today().month-1)
     
     m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
     fs_monthly = dash_sales[(dash_sales["Date"].dt.year == s_y) & (dash_sales["Date"].dt.month == m_idx)]
@@ -226,7 +220,8 @@ if page == "Dashboard":
     exp_df["Date"] = pd.to_datetime(exp_df["Date"], errors='coerce')
     monthly_exp_val = exp_df[(exp_df["Date"].dt.year == s_y) & (exp_df["Date"].dt.month == m_idx)]['Cost'].sum()
     
-    rev, prof = paid_monthly['Total'].sum(), paid_monthly['Profit'].sum()
+    rev = paid_monthly['Total'].sum()
+    prof = paid_monthly['Profit'].sum()
     margin = (prof / rev * 100) if rev > 0 else 0
     exp_ratio = (monthly_exp_val / rev * 100) if rev > 0 else 0
 
@@ -243,23 +238,28 @@ if page == "Dashboard":
     with c1:
         st.write("### 🚨 Stock Alerts")
         sdf = st.session_state.stock[st.session_state.stock["Status"] == "In Stock"].groupby("Product Name")["Quantity"].sum().reset_index()
-        st.dataframe(sdf[sdf["Quantity"] < 5].sort_values("Quantity"), use_container_width=True, hide_index=True)
+        alerts = sdf[sdf["Quantity"] < 5].sort_values("Quantity")
+        st.dataframe(alerts, use_container_width=True, hide_index=True)
     with c2:
         st.write("### 🏆 Top Sellers (Paid)")
-        if not paid_monthly.empty: st.table(paid_monthly.groupby("Product")["Qty"].sum().sort_values(ascending=False).head(5))
+        if not paid_monthly.empty: 
+            st.table(paid_monthly.groupby("Product")["Qty"].sum().sort_values(ascending=False).head(5))
 
     st.write("---")
     st.write("### 📈 Monthly Analytics")
     g1, g2 = st.columns(2)
     with g1:
-        fig_comp = go.Figure([go.Bar(x=[s_m], y=[prof], name='Profit', marker_color='#2ecc71'), go.Bar(x=[s_m], y=[monthly_exp_val], name='Expenses', marker_color='#e74c3c')])
-        fig_comp.update_layout(barmode='group', template="plotly_dark", height=400)
+        fig_comp = go.Figure()
+        fig_comp.add_trace(go.Bar(x=[s_m], y=[prof], name='Profit', marker_color='#2ecc71'))
+        fig_comp.add_trace(go.Bar(x=[s_m], y=[monthly_exp_val], name='Expenses', marker_color='#e74c3c'))
+        fig_comp.update_layout(barmode='group', height=400, template="plotly_dark")
         st.plotly_chart(fig_comp, use_container_width=True)
     with g2:
         if not paid_monthly.empty:
-            ps = paid_monthly.groupby("Product").agg({"Total":"sum", "Profit":"sum"}).reset_index()
-            ps["Margin %"] = (ps["Profit"] / ps["Total"] * 100)
-            st.plotly_chart(px.bar(ps, x="Margin %", y="Product", orientation='h', template="plotly_dark", height=400), use_container_width=True)
+            prod_stats = paid_monthly.groupby("Product").agg({"Total":"sum", "Profit":"sum"}).reset_index()
+            prod_stats["Margin %"] = (prod_stats["Profit"] / prod_stats["Total"] * 100)
+            fig_margin = px.bar(prod_stats.sort_values("Margin %"), x="Margin %", y="Product", orientation='h', template="plotly_dark")
+            st.plotly_chart(fig_margin, use_container_width=True)
 
 elif page == "Database":
     st.markdown("<h1>📂 Database</h1>", unsafe_allow_html=True)
@@ -270,8 +270,8 @@ elif page == "Database":
             db_df[nt] = 0.0; save_data(db_df, DB_FILE, sync_name="Database"); log_action(f"Added Tier: '{nt}'"); st.rerun()
     with c2:
         td = st.selectbox("Select Tier to Remove", [""] + price_tiers_list)
-        if st.button("Delete Tier") and td:
-            db_df = db_df.drop(columns=[td]); save_data(db_df, DB_FILE, sync_name="Database"); st.rerun()
+        if st.button("Delete Tier"):
+            if td: db_df = db_df.drop(columns=[td]); save_data(db_df, DB_FILE, sync_name="Database"); st.rerun()
     
     ed_db = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic", height=600)
     if not ed_db.equals(db_df):
@@ -287,8 +287,8 @@ elif page == "Inventory":
     with cr:
         f = st.columns([1.2, 1, 1, 1, 0.5])
         c_date, np, nq, ns = f[0].date_input("Date"), f[1].selectbox("Product", product_list), f[2].number_input("Qty", min_value=1), f[3].selectbox("Status", ["In Stock", "Bought"])
-        if f[4].button("➕"):
-            nr = pd.DataFrame([{"Product Name": np, "Quantity": nq, "Status": ns, "Date": c_date}])
+        if f[4].button("➕", key="inv_add_btn"):
+            nr = pd.DataFrame({"Product Name": [np], "Quantity": [nq], "Status": [ns], "Date": [c_date]})
             st.session_state.stock = pd.concat([st.session_state.stock, nr], ignore_index=True)
             save_data(st.session_state.stock, STOCK_FILE, sync_name="Inventory"); st.rerun()
         
@@ -301,34 +301,52 @@ elif page == "Sales":
     with st.container(border=True):
         sf = st.columns([1, 1.2, 1.5, 0.8, 1, 0.5])
         s_date, s_cust, s_prod, s_qty, s_tier = sf[0].date_input("Date"), sf[1].text_input("Customer"), sf[2].selectbox("Product", [""]+product_list), sf[3].number_input("Qty", min_value=1), sf[4].selectbox("Tier", [""]+price_tiers_list)
-        if sf[5].button("➕"):
+        if sf[5].button("➕", key="s_add"):
             if s_prod and s_tier:
                 match = db_df[db_df["Product Name"] == s_prod]
                 u_c, b_c, u_p = float(match["Cost per Unit"].values[0]), float(match["Boxed Cost"].values[0]), float(match[s_tier].values[0])
-                new_row = pd.DataFrame([{"Date": s_date, "Customer": s_cust, "Product": s_prod, "Qty": s_qty, "Price Tier": s_tier, "Cost": u_c, "Boxed Cost": b_c, "Profit": (u_p * s_qty) - (b_c * s_qty), "Discount": 0.0, "Total": u_p * s_qty, "Status": "Pending", "Payment": "Unpaid"}])
+                calc_tot = u_p * s_qty
+                new_row = pd.DataFrame([{"Date": s_date, "Customer": s_cust, "Product": s_prod, "Qty": s_qty, "Price Tier": s_tier, "Cost": u_c, "Boxed Cost": b_c, "Profit": calc_tot - (b_c * s_qty), "Discount": 0.0, "Total": calc_tot, "Status": "Pending", "Payment": "Unpaid"}])
                 st.session_state.sales = pd.concat([st.session_state.sales, new_row], ignore_index=True)
                 save_data(st.session_state.sales, SALES_FILE, sync_name="Sales"); st.rerun()
 
-    conf = {"Date": st.column_config.DateColumn("Date", required=True), "Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"), "Boxed Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"), "Profit": st.column_config.NumberColumn(disabled=True, format="₱%.2f"), "Total": st.column_config.NumberColumn(disabled=True, format="₱%.2f")}
+    # RESTORED DROPDOWN CONFIGURATION
+    conf = {
+        "Date": st.column_config.DateColumn("Date", required=True),
+        "Product": st.column_config.SelectboxColumn("Product", options=product_list),
+        "Price Tier": st.column_config.SelectboxColumn("Price Tier", options=price_tiers_list),
+        "Status": st.column_config.SelectboxColumn("Status", options=["Pending", "Sold", "Cancelled"]),
+        "Payment": st.column_config.SelectboxColumn("Payment", options=["Unpaid", "Paid"]),
+        "Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
+        "Boxed Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
+        "Profit": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
+        "Total": st.column_config.NumberColumn(disabled=True, format="₱%.2f")
+    }
     view = st.session_state.sales.copy().iloc[::-1]
-    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v27", height=600)
+    for c in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]:
+        view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
+
+    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_editor_v27", height=600)
     
     if not ed_sales.equals(view):
         ndf = ed_sales.copy()
         for idx in ndf.index:
             row = ndf.loc[idx]
             old_row = view.loc[idx] if idx in view.index else None
-            if row["Product"] and row["Price Tier"]:
-                m = db_df[db_df["Product Name"] == row["Product"]]
-                if not m.empty:
-                    u_p = float(m[row["Price Tier"]].values[0])
-                    ndf.at[idx, "Total"] = (u_p - row["Discount"]) * row["Qty"]
-                    ndf.at[idx, "Profit"] = ndf.at[idx, "Total"] - (float(m["Boxed Cost"].values[0]) * row["Qty"])
+            prod, tier = row["Product"], row["Price Tier"]
+            if prod and tier:
+                match = db_df[db_df["Product Name"] == prod]
+                if not match.empty:
+                    u_c, b_c, u_p = float(match["Cost per Unit"].values[0]), float(match["Boxed Cost"].values[0]), float(match[tier].values[0])
+                    qty, disc = float(row["Qty"]), float(row["Discount"])
+                    tot, prf = (u_p - disc) * qty, ((u_p - disc) * qty) - (b_c * qty)
+                    ndf.at[idx, "Cost"], ndf.at[idx, "Boxed Cost"], ndf.at[idx, "Total"], ndf.at[idx, "Profit"] = u_c, b_c, tot, prf
             
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
                 s_df = st.session_state.stock.copy()
-                mask = (s_df["Product Name"] == row["Product"]) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
-                available, needed = s_df[mask].index, int(row["Qty"])
+                mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
+                available = s_df[mask].index
+                needed = int(row["Qty"])
                 for s_idx in available:
                     if needed <= 0: break
                     take = min(needed, s_df.at[s_idx, "Quantity"])
@@ -342,13 +360,13 @@ elif page == "Expenditures":
     c1, c2 = st.columns(2)
     with c1:
         ex_d, it, ct = st.date_input("Ex Date"), st.text_input("Ex Item"), st.number_input("Ex Cost", min_value=0.0)
-        if st.button("Add Expense"):
+        if st.button("Add Expense", key="ex_btn"):
             new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
             st.session_state.expenditures = pd.concat([st.session_state.expenditures, new])
             save_data(st.session_state.expenditures, EXPENSE_FILE, sync_name="Expenses"); st.rerun()
     with c2:
         in_d, src, amt = st.date_input("Dep Date"), st.text_input("Dep Source"), st.number_input("Dep Amount", min_value=0.0)
-        if st.button("Add Deposit"):
+        if st.button("Add Deposit", key="dep_btn"):
             new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
             st.session_state.cash_in = pd.concat([st.session_state.cash_in, new])
             save_data(st.session_state.cash_in, CASH_FILE, sync_name="CashIn"); st.rerun()
@@ -372,31 +390,35 @@ elif page == "Admin" and st.session_state.role == "Admin":
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2, 1, 1])
                 c1.write(f"User: **{row['Username']}**")
-                if c2.button(f"Approve", key=f"a_{row['Username']}"):
+                if c2.button(f"Approve", key=f"app_{row['Username']}"):
                     users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
-                if c3.button(f"Reject", key=f"r_{row['Username']}"):
-                    save_data(users_df.drop(idx), USERS_FILE, sync_name="Users"); st.rerun()
+                if c3.button(f"Reject", key=f"rej_{row['Username']}"):
+                    users_df = users_df.drop(idx); save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
     with t2:
         approved = users_df[users_df['Status'] == "Approved"]
         for idx, row in approved.iterrows():
             with st.container(border=True):
                 c1, c2 = st.columns([2, 2])
                 c1.write(f"User: **{row['Username']}**")
-                nr = c2.selectbox("Role", ["Staff", "Admin"], index=0 if row['Role'] == "Staff" else 1, key=f"rl_{row['Username']}")
+                nr = c2.selectbox("Role", ["Staff", "Admin"], index=0 if row['Role'] == "Staff" else 1, key=f"role_{row['Username']}")
                 if nr != row['Role']:
                     users_df.at[idx, 'Role'] = nr; save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
     with t3:
-        reqs = load_data(APPROVAL_FILE, {"Details": []})
+        reqs = load_data(APPROVAL_FILE, {"Request Date": [], "User": [], "Page": [], "Details": [], "RawData": []})
         for idx, row in reqs.iterrows():
             with st.container(border=True):
-                st.write(row['Details']); 
-                if st.button("Confirm", key=f"cd_{idx}"): save_data(reqs.drop(idx), APPROVAL_FILE); st.rerun()
+                st.write(f"**{row['Page']}** | {row['User']}")
+                st.code(row['Details'])
+                if st.button("Confirm", key=f"c_{idx}"):
+                    reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
 
     with t4:
-        st.write("### ☁️ Cloud Data Management")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Manual Cloud Backup")
+        st.write("### ☁️ Google Sheets Control Hub")
+        st.info("Directly push local data to the cloud or pull it back.")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Manual Backup")
             if st.button("🚀 Push All Data to Google Sheets"):
                 with st.spinner("Syncing..."):
                     sync_to_google(st.session_state.inventory, "Database")
@@ -406,14 +428,15 @@ elif page == "Admin" and st.session_state.role == "Admin":
                     sync_to_google(st.session_state.cash_in, "CashIn")
                     sync_to_google(users_df, "Users")
                     st.success("Cloud Backup Complete!")
-        with c2:
-            st.subheader("Cloud Restoration")
-            if st.button("📥 Pull & Overwrite from Google Sheets"):
+        
+        with col2:
+            st.subheader("Manual Restoration")
+            if st.button("📥 Pull Data from Google Sheets"):
                 with st.spinner("Restoring..."):
                     for f, s in [(DB_FILE, "Database"), (STOCK_FILE, "Inventory"), (SALES_FILE, "Sales"), (EXPENSE_FILE, "Expenses"), (CASH_FILE, "CashIn")]:
                         pulled = fetch_from_google(s)
                         if pulled is not None: save_data(pulled, f)
-                st.success("Cloud Restore Complete!"); st.rerun()
+                    st.success("Cloud Restore Complete!"); st.rerun()
 
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
