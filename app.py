@@ -59,11 +59,10 @@ def make_hashes(password):
 def check_hashes(password, hashed_text):
     return make_hashes(password) == hashed_text
 
-# --- DATA HELPERS (FIXED FOR EMPTY FILES) ---
+# --- DATA HELPERS ---
 def load_data(file, defaults):
     if os.path.exists(file):
         try:
-            # Check if file is empty first to prevent Pandas crash
             if os.path.getsize(file) > 0:
                 df = pd.read_csv(file)
                 if not df.empty and "Date" in df.columns:
@@ -71,7 +70,7 @@ def load_data(file, defaults):
                     df["Date"] = df["Date"].fillna(date.today())
                 return df
         except Exception:
-            pass # Revert to defaults if reading fails
+            pass
     return pd.DataFrame(defaults)
 
 def save_data(df, file):
@@ -177,7 +176,7 @@ elif page == "Dashboard":
     cash = (st.session_state.cash_in['Amount'].sum() + st.session_state.sales['Profit'].sum()) - st.session_state.expenditures['Cost'].sum()
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Cash", f"₱{cash:,.2f}"); m2.metric("Profit", f"₱{fs['Profit'].sum():,.2f}")
-    m3.metric("Net Period", f"₱{(fs['Profit'].sum() - st.session_state.expenditures['Cost'].sum()):,.2f}"); m4.metric("Unpaid", f"₱{fs[fs['Payment'] == 'Unpaid']['Total'].sum():,.2f}")
+    m3.metric("Net Period", f"₱{(fs['Profit'].sum() - st.session_state.expenditures['Cost'].sum()):,.2f}"); m4.metric("Unpaid Balance", f"₱{fs[fs['Payment'] == 'Unpaid']['Total'].sum():,.2f}")
     
     st.write("---")
     c1, c2 = st.columns(2)
@@ -227,14 +226,16 @@ elif page == "Inventory":
     st.markdown("<h1>📦 Inventory</h1>", unsafe_allow_html=True)
     l, r = st.columns([1, 2])
     with l:
-        st.write("### 📊 Tally")
+        st.write("### 📊 Quick Tally")
+        # FIXED SORTING: Least quantity at the top by default
         sdf = st.session_state.stock[st.session_state.stock["Status"] == "In Stock"].groupby("Product Name")["Quantity"].sum().reset_index()
-        sdf["Alert"] = sdf["Quantity"].apply(lambda q: "❌" if q <= 0 else "⚠️" if q < 5 else "✅")
+        sdf = sdf.sort_values(by="Quantity", ascending=True)
+        sdf["Alert"] = sdf["Quantity"].apply(lambda q: "❌ Out" if q <= 0 else "⚠️ Low" if q < 5 else "✅ Good")
         st.dataframe(sdf, use_container_width=True, hide_index=True)
     with r:
-        st.write("### ➕ Add Stock")
+        st.write("### ⚙️ Add Stock Entry")
         f = st.columns([2, 1, 1, 0.5])
-        np, nq, ns = f[0].selectbox("Item", product_list), f[1].number_input("Qty", min_value=1), f[2].selectbox("Status", ["In Stock", "Bought"])
+        np, nq, ns = f[0].selectbox("Item", sorted(product_list)), f[1].number_input("Qty", min_value=1), f[2].selectbox("Status", ["In Stock", "Bought"])
         if f[3].button("➕"):
             nr = pd.DataFrame({"Product Name": [np], "Quantity": [nq], "Status": [ns], "Date": [date.today()]})
             st.session_state.stock = pd.concat([st.session_state.stock, nr], ignore_index=True); save_data(st.session_state.stock, STOCK_FILE); st.rerun()
