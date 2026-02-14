@@ -4,6 +4,7 @@ import os
 import shutil
 from datetime import date, datetime
 import hashlib
+import ast
 
 # --- PRE-FLIGHT CHECK ---
 try:
@@ -30,7 +31,7 @@ if not os.path.exists("backups"): os.makedirs("backups")
 
 SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Cost", "Boxed Cost", "Profit", "Discount", "Total", "Status", "Payment"]
 
-# --- DYNAMIC CSS ---
+# --- DYNAMIC CSS (STRICT COMPACT SIDEBAR) ---
 st.markdown(f"""
     <style>
     html, body, [class*="ViewContainer"] {{ font-size: 12px !important; }}
@@ -73,12 +74,12 @@ def request_deletion(page_name, row_data):
         "Timestamp": [datetime.now().strftime("%Y-%m-%d %H:%M")],
         "User": [st.session_state.user],
         "Page": [page_name],
-        "Data": [str(row_data.to_dict())]
+        "Data": [str(row_data)]
     })
     save_data(pd.concat([pending, new_req], ignore_index=True), APPROVAL_FILE)
-    st.warning("Deletion request sent to Admin for approval.")
+    st.warning(f"Deletion from {page_name} blocked and sent to Admin for approval.")
 
-# --- DATA LOAD ---
+# --- INITIALIZATION ---
 users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"], "Status": ["Approved"]})
 db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
 st.session_state.inventory = db_df
@@ -154,36 +155,52 @@ elif page == "Dashboard":
     st.markdown("<h1>📊 Dashboard</h1>", unsafe_allow_html=True)
     cash = (st.session_state.cash_in['Amount'].sum() + st.session_state.sales['Profit'].sum()) - st.session_state.expenditures['Cost'].sum()
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Cash", f"₱{cash:,.2f}"); m2.metric("Sales Profit", f"₱{st.session_state.sales['Profit'].sum():,.2f}")
+    m1.metric("Total Cash", f"₱{cash:,.2f}"); m2.metric("Profit", f"₱{st.session_state.sales['Profit'].sum():,.2f}")
     st.write("### 🚨 Stock Alerts")
     summary = st.session_state.stock[st.session_state.stock["Status"] == "In Stock"].groupby("Product Name")["Quantity"].sum().reset_index().sort_values("Quantity")
     st.dataframe(summary[summary["Quantity"] < 5], use_container_width=True, hide_index=True)
 
 elif page == "Database":
     st.markdown("<h1>📂 Database</h1>", unsafe_allow_html=True)
-    t1, t2 = st.columns([3, 1])
-    nt = t1.text_input("New Tier")
-    if t2.button("Add"):
-        db_df[nt] = 0.0; save_data(db_df, DB_FILE); st.rerun()
+    # Restore Price Tier Removal Tool
+    c_add, c_del = st.columns(2)
+    with c_add:
+        st.write("### ➕ Add Tier")
+        t1, t2 = st.columns([3, 1])
+        nt = t1.text_input("New Name")
+        if t2.button("Add"):
+            db_df[nt] = 0.0; save_data(db_df, DB_FILE); st.rerun()
+    with c_del:
+        st.write("### 🗑️ Remove Tier")
+        d1, d2 = st.columns([3, 1])
+        td = d1.selectbox("Select to Delete", [""] + price_tiers_list)
+        if d2.button("Delete"):
+            if td:
+                db_df = db_df.drop(columns=[td]); save_data(db_df, DB_FILE); st.rerun()
+    
     ed = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic")
-    if len(ed) < len(db_df): request_deletion("Database", db_df.iloc[-1]); st.rerun()
+    if len(ed) < len(db_df): request_deletion("Database", "Row deletion blocked"); st.rerun()
     elif not ed.equals(db_df): save_data(ed, DB_FILE); st.rerun()
 
 elif page == "Inventory":
     st.markdown("<h1>📦 Inventory</h1>", unsafe_allow_html=True)
-    sdf = st.session_state.stock[st.session_state.stock["Status"] == "In Stock"].groupby("Product Name")["Quantity"].sum().reset_index().sort_values("Quantity")
-    st.dataframe(sdf, use_container_width=True, hide_index=True)
-    st.write("### ➕ Stock Logs")
-    ed_s = st.data_editor(st.session_state.stock.copy().iloc[::-1], use_container_width=True, num_rows="dynamic")
-    if len(ed_s) < len(st.session_state.stock): request_deletion("Inventory", st.session_state.stock.iloc[0]); st.rerun()
-    elif not ed_s.equals(st.session_state.stock.iloc[::-1]): save_data(ed_s.iloc[::-1], STOCK_FILE); st.rerun()
+    # Tally back on the left side
+    cl, cr = st.columns([1, 2])
+    with cl:
+        st.write("### 📊 Tally")
+        sdf = st.session_state.stock[st.session_state.stock["Status"] == "In Stock"].groupby("Product Name")["Quantity"].sum().reset_index().sort_values("Quantity")
+        st.dataframe(sdf, use_container_width=True, hide_index=True)
+    with cr:
+        st.write("### ➕ Stock Entry")
+        ed_s = st.data_editor(st.session_state.stock.copy().iloc[::-1], use_container_width=True, num_rows="dynamic")
+        if len(ed_s) < len(st.session_state.stock): request_deletion("Inventory", "Row deletion blocked"); st.rerun()
+        elif not ed_s.equals(st.session_state.stock.iloc[::-1]): save_data(ed_s.iloc[::-1], STOCK_FILE); st.rerun()
 
 elif page == "Sales":
-    st.markdown("<h1>💰 Sales</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
     ed = st.data_editor(st.session_state.sales[SALES_ORDER], use_container_width=True, num_rows="dynamic")
-    if len(ed) < len(st.session_state.sales): request_deletion("Sales", st.session_state.sales.iloc[-1]); st.rerun()
-    elif not ed.equals(st.session_state.sales[SALES_ORDER]): 
-        # (Processing logic from previous versions remains here)
+    if len(ed) < len(st.session_state.sales): request_deletion("Sales", "Row deletion blocked"); st.rerun()
+    elif not ed.equals(st.session_state.sales[SALES_ORDER]):
         save_data(ed, SALES_FILE); st.rerun()
 
 elif page == "Expenditures":
@@ -196,6 +213,7 @@ elif page == "Expenditures":
             new = pd.DataFrame({"Date": [date.today()], "Item": [it], "Cost": [ct]})
             save_data(pd.concat([st.session_state.expenditures, new], ignore_index=True), EXPENSE_FILE); st.rerun()
     with c2:
+        # Restore Deposits
         st.write("### ➕ Log Deposit")
         src, amt = st.text_input("Source"), st.number_input("Amount", min_value=0.0)
         if st.button("Add Deposit"):
