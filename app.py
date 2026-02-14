@@ -61,10 +61,16 @@ def load_data(file, defaults):
 def save_data(df, file): df.to_csv(file, index=False)
 
 def log_action(action_desc):
-    user = st.session_state.get('user', 'Unknown')
+    # IDENTITY LOGGING: Capture Username and Role
+    user_name = st.session_state.get('user', 'Unknown')
+    user_role = st.session_state.get('role', 'System')
     now = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-    new_log = pd.DataFrame({"Timestamp": [now], "User": [user], "Action Detail": [action_desc]})
-    current_logs = load_data(LOG_FILE, {"Timestamp": [], "User": [], "Action Detail": []})
+    
+    # Format the log string to show WHO is doing WHAT
+    detailed_desc = f"{user_name} ({user_role}): {action_desc}"
+    
+    new_log = pd.DataFrame({"Timestamp": [now], "Identity": [f"{user_name} ({user_role})"], "Action Detail": [action_desc]})
+    current_logs = load_data(LOG_FILE, {"Timestamp": [], "Identity": [], "Action Detail": []})
     log_df = pd.concat([new_log, current_logs], ignore_index=True)
     save_data(log_df, LOG_FILE)
 
@@ -105,7 +111,7 @@ if not st.session_state.logged_in:
             if not res.empty and check_hashes(p, res.iloc[0]['Password']):
                 if res.iloc[0]['Status'] == "Approved":
                     st.session_state.logged_in, st.session_state.user, st.session_state.role = True, u, res.iloc[0]['Role']
-                    log_action(f"User {u} logged in.")
+                    log_action(f"Successfully logged into the system.")
                     st.rerun()
                 else: st.error("Account pending approval.")
             else: st.error("Invalid credentials.")
@@ -119,7 +125,7 @@ if not st.session_state.logged_in:
                 st.success("Registration request sent to Musika.")
     st.stop()
 
-# --- SIDEBAR ---
+# --- SIDEBAR (WITH ICONS) ---
 with st.sidebar:
     st.markdown(f"👤 **{st.session_state.user}**")
     if st.button("📊 Dashboard"): st.session_state.current_page = "Dashboard"
@@ -132,7 +138,7 @@ with st.sidebar:
         if st.button("🛡️ Admin Page"): st.session_state.current_page = "Admin"
     st.write("---")
     if st.button("🚪 Logout"): 
-        log_action("User logged out.")
+        log_action("Logged out.")
         st.session_state.logged_in = False; st.rerun()
 
 # --- PAGES ---
@@ -147,9 +153,9 @@ if page == "Dashboard":
         s_y = f1.selectbox("Year", y_list)
         s_m = f2.selectbox("Month", ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], index=date.today().month-1)
     
-    m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
+    midx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
     fs = st.session_state.sales.copy(); fs["Date"] = pd.to_datetime(fs["Date"])
-    fs = fs[(fs["Date"].dt.year == s_y) & (fs["Date"].dt.month == m_idx)]
+    fs = fs[(fs["Date"].dt.year == s_y) & (fs["Date"].dt.month == midx)]
     
     cash = (st.session_state.cash_in['Amount'].sum() + st.session_state.sales['Profit'].sum()) - st.session_state.expenditures['Cost'].sum()
     m1, m2, m3, m4 = st.columns(4)
@@ -230,14 +236,14 @@ elif page == "Sales":
     conf = {"Product": st.column_config.SelectboxColumn(options=product_list), "Price Tier": st.column_config.SelectboxColumn(options=price_tiers_list)}
     ed = st.data_editor(st.session_state.sales[SALES_ORDER], use_container_width=True, num_rows="dynamic", column_config=conf)
     if len(ed) < len(st.session_state.sales): request_deletion("Sales", "Sale Transaction Removal"); st.rerun()
-    elif not ed.equals(st.session_state.sales[SALES_ORDER]): save_data(ed, SALES_FILE); log_action("Updated Sales data."); st.rerun()
+    elif not ed.equals(st.session_state.sales[SALES_ORDER]): save_data(ed, SALES_FILE); log_action("Updated Sales transactions."); st.rerun()
 
 elif page == "Expenditures":
     st.markdown("<h1>💸 Expenditures & Deposits</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         st.write("### ➖ Log Expense")
-        f_ex = st.columns([1, 1.5, 1, 0.4])
+        f_ex = st.columns([1.2, 1.5, 1, 0.4])
         ex_d = f_ex[0].date_input("Date", date.today(), key="ex_cal")
         it = f_ex[1].text_input("Item Name", key="ex_it")
         ct = f_ex[2].number_input("Cost (₱)", min_value=0.0, key="ex_ct")
@@ -245,10 +251,10 @@ elif page == "Expenditures":
             new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
             st.session_state.expenditures = pd.concat([st.session_state.expenditures, new], ignore_index=True)
             save_data(st.session_state.expenditures, EXPENSE_FILE)
-            log_action(f"Expense Logged: {it} (₱{ct}) on {ex_d}"); st.rerun()
+            log_action(f"Logged Expense: {it} (₱{ct}) on {ex_d}"); st.rerun()
     with c2:
         st.write("### ➕ Log Deposit")
-        f_in = st.columns([1, 1.5, 1, 0.4])
+        f_in = st.columns([1.2, 1.5, 1, 0.4])
         in_d = f_in[0].date_input("Date", date.today(), key="in_cal")
         src = f_in[1].text_input("Source", key="in_src")
         amt = f_in[2].number_input("Amount (₱)", min_value=0.0, key="in_amt")
@@ -256,38 +262,54 @@ elif page == "Expenditures":
             new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
             st.session_state.cash_in = pd.concat([st.session_state.cash_in, new], ignore_index=True)
             save_data(st.session_state.cash_in, CASH_FILE)
-            log_action(f"Deposit Logged: {src} (₱{amt}) on {in_d}"); st.rerun()
+            log_action(f"Logged Deposit: {src} (₱{amt}) on {in_d}"); st.rerun()
     
     st.write("---")
     l_c, r_c = st.columns(2)
     with l_c:
-        st.write("### 📝 Expense Log")
+        st.write("### 📝 Expense History")
         v_ex = st.session_state.expenditures.copy().iloc[::-1]
         ed_ex = st.data_editor(v_ex, use_container_width=True, hide_index=True, num_rows="dynamic", key="ed_ex")
-        if len(ed_ex) < len(v_ex): request_deletion("Expenditures", "Expense Row"); st.rerun()
+        if len(ed_ex) < len(v_ex): request_deletion("Expenditures", "Expense Row Removal"); st.rerun()
         elif not ed_ex.equals(v_ex): save_data(ed_ex.iloc[::-1], EXPENSE_FILE); log_action("Updated Expense Log."); st.rerun()
     with r_c:
-        st.write("### 📝 Deposit Log")
+        st.write("### 📝 Deposit History")
         v_in = st.session_state.cash_in.copy().iloc[::-1]
         ed_in = st.data_editor(v_in, use_container_width=True, hide_index=True, num_rows="dynamic", key="ed_in")
-        if len(ed_in) < len(v_in): request_deletion("Expenditures", "Deposit Row"); st.rerun()
+        if len(ed_in) < len(v_in): request_deletion("Expenditures", "Deposit Row Removal"); st.rerun()
         elif not ed_in.equals(v_in): save_data(ed_in.iloc[::-1], CASH_FILE); log_action("Updated Deposit Log."); st.rerun()
 
 elif page == "Admin" and st.session_state.role == "Admin":
     st.markdown("<h1>🛡️ Admin Control</h1>", unsafe_allow_html=True)
-    st.write("### 👥 User Approvals")
-    for idx, row in users_df[users_df['Status'] == "Pending"].iterrows():
-        col1, col2 = st.columns([3, 1])
-        col1.write(f"Account: **{row['Username']}**")
-        if col2.button(f"Approve {row['Username']}"):
-            users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE); log_action(f"Admin approved {row['Username']}"); st.rerun()
+    st.write("### 👥 Pending User Approvals")
+    pend_users = users_df[users_df['Status'] == "Pending"]
+    if not pend_users.empty:
+        for idx, row in pend_users.iterrows():
+            col1, col2 = st.columns([3, 1])
+            col1.write(f"Account: **{row['Username']}**")
+            if col2.button(f"Approve {row['Username']}"):
+                users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE)
+                log_action(f"Approved account for {row['Username']}")
+                st.rerun()
+    else: st.info("No pending user requests.")
+    
     st.write("---")
     st.write("### 🗑️ Deletion Queue")
-    st.dataframe(load_data(APPROVAL_FILE, {}), use_container_width=True)
-    if st.button("Clear Deletion Queue"): save_data(pd.DataFrame(columns=["Timestamp", "User", "Page", "Details"]), APPROVAL_FILE); st.rerun()
+    dq = load_data(APPROVAL_FILE, {})
+    if not dq.empty:
+        st.dataframe(dq, use_container_width=True)
+        if st.button("Clear Deletion Queue"): 
+            save_data(pd.DataFrame(columns=["Timestamp", "User", "Page", "Details"]), APPROVAL_FILE)
+            log_action("Wiped the deletion queue.")
+            st.rerun()
+    else: st.info("No pending deletions.")
 
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
-    st.dataframe(load_data(LOG_FILE, {}), use_container_width=True, hide_index=True)
-    if st.session_state.role == "Admin" and st.button("🗑️ Clear Logs"):
-        save_data(pd.DataFrame(columns=["Timestamp", "User", "Action Detail"]), LOG_FILE); log_action("Logs Wiped."); st.rerun()
+    logs = load_data(LOG_FILE, {})
+    # Show Identity Column clearly in the log
+    st.dataframe(logs, use_container_width=True, hide_index=True)
+    if st.session_state.role == "Admin":
+        st.write("---")
+        if st.button("🗑️ Clear Logs (Admin Only)"):
+            save_data(pd.DataFrame(columns=["Timestamp", "Identity", "Action Detail"]), LOG_FILE); log_action("Logs cleared."); st.rerun()
