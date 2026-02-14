@@ -42,7 +42,6 @@ st.markdown(f"""
     .stButton > button {{ width: 100% !important; padding: 2px 8px !important; text-align: left !important; font-size: 11px !important; border-radius: 4px !important; min-height: 24px !important; margin-bottom: -10px !important; }}
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap: 0.2rem !important; padding-top: 1rem !important; }}
     hr {{ border: none !important; height: 1px !important; background-color: #333 !important; display: block !important; margin: 5px 0 !important; }}
-    /* Toolbars are now enabled to allow deletion buttons to show */
     </style>
     """, unsafe_allow_html=True)
 
@@ -133,7 +132,7 @@ if not st.session_state.logged_in:
                 st.success("Request sent to Musika.")
     st.stop()
 
-# --- SIDEBAR ---
+# --- SIDEBAR & NOTIFICATION LOGIC ---
 with st.sidebar:
     st.markdown(f"👤 **{st.session_state.user}** ({st.session_state.role})")
     if st.button("📊 Dashboard"): st.session_state.current_page = "Dashboard"
@@ -142,8 +141,20 @@ with st.sidebar:
     if st.button("💰 Sales"): st.session_state.current_page = "Sales"
     if st.button("💸 Expenditures"): st.session_state.current_page = "Expenditures"
     if st.button("📜 Activity Log"): st.session_state.current_page = "Log"
+    
     if st.session_state.role == "Admin": 
-        if st.button("🛡️ Admin Page"): st.session_state.current_page = "Admin"
+        # Calculate Pending Notifications
+        pending_users = len(users_df[users_df['Status'] == "Pending"])
+        pending_dels = len(load_data(APPROVAL_FILE, {"Details": []}))
+        total_notifs = pending_users + pending_dels
+        
+        admin_label = "🛡️ Admin Page"
+        if total_notifs > 0:
+            admin_label = f"🛡️ Admin Page (🚨 {total_notifs})"
+            
+        if st.button(admin_label): 
+            st.session_state.current_page = "Admin"
+            
     st.write("---")
     if st.button("🚪 Logout"): 
         cookie_manager.delete("inv_pro_user"); log_action("Logged out."); st.session_state.logged_in = False; st.rerun()
@@ -286,8 +297,7 @@ elif page == "Sales":
     view = st.session_state.sales.copy().iloc[::-1]
     for c in ["Qty", "Discount", "Cost", "Boxed Cost", "Profit", "Total"]: view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
 
-    # hide_index=True is active, but toolbar is enabled via CSS restoration
-    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v18", height=600)
+    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_v19", height=600)
     
     if not ed_sales.equals(view):
         ndf = ed_sales.copy()
