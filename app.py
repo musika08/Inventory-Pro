@@ -119,7 +119,7 @@ if not st.session_state.logged_in:
                 st.success("Registration request sent to Musika.")
     st.stop()
 
-# --- SIDEBAR (WITH ICONS) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.markdown(f"👤 **{st.session_state.user}**")
     if st.button("📊 Dashboard"): st.session_state.current_page = "Dashboard"
@@ -185,7 +185,7 @@ elif page == "Database":
         nt = t1.text_input("Tier Name")
         if t2.button("Add"):
             db_df[nt] = 0.0; save_data(db_df, DB_FILE)
-            log_action(f"Added new Price Tier: {nt}")
+            log_action(f"Added Price Tier: {nt}")
             st.rerun()
     with c2:
         st.write("### 🗑️ Remove Price Tier")
@@ -198,13 +198,8 @@ elif page == "Database":
                 st.rerun()
     
     ed = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic")
-    if len(ed) < len(db_df): 
-        request_deletion("Database", "Product Row Removal")
-        st.rerun()
-    elif not ed.equals(db_df):
-        save_data(ed, DB_FILE)
-        log_action(f"Updated Database table data.")
-        st.rerun()
+    if len(ed) < len(db_df): request_deletion("Database", "Product Row Removal"); st.rerun()
+    elif not ed.equals(db_df): save_data(ed, DB_FILE); log_action("Updated Database table data."); st.rerun()
 
 elif page == "Inventory":
     st.markdown("<h1>📦 Inventory Summary</h1>", unsafe_allow_html=True)
@@ -215,88 +210,84 @@ elif page == "Inventory":
         sdf["Status"] = sdf["Quantity"].apply(lambda q: "❌ Out" if q <= 0 else "⚠️ Low" if q < 5 else "✅ Good")
         st.dataframe(sdf, use_container_width=True, hide_index=True)
     with cr:
-        st.write("### ➕ Add Stock Entry")
-        f = st.columns([2, 1, 1, 0.5])
-        np, nq, ns = f[0].selectbox("Product", product_list), f[1].number_input("Qty", min_value=1), f[2].selectbox("Status", ["In Stock", "Bought"])
-        if f[3].button("➕"):
-            nr = pd.DataFrame({"Product Name": [np], "Quantity": [nq], "Status": [ns], "Date": [date.today()]})
+        st.write("### ⚙️ Add Stock Entry")
+        f = st.columns([1.5, 1, 1, 1, 0.5])
+        c_date = f[0].date_input("Date", date.today())
+        np = f[1].selectbox("Product", product_list)
+        nq = f[2].number_input("Qty", min_value=1)
+        ns = f[3].selectbox("Status", ["In Stock", "Bought"])
+        if f[4].button("➕"):
+            nr = pd.DataFrame({"Product Name": [np], "Quantity": [nq], "Status": [ns], "Date": [c_date]})
             st.session_state.stock = pd.concat([st.session_state.stock, nr], ignore_index=True); save_data(st.session_state.stock, STOCK_FILE)
-            log_action(f"Stocked IN: {nq} units of {np}")
+            log_action(f"Stocked IN: {nq} units of {np} on {c_date}")
             st.rerun()
         ed_s = st.data_editor(st.session_state.stock.copy().iloc[::-1], use_container_width=True, num_rows="dynamic")
-        if len(ed_s) < len(st.session_state.stock): 
-            request_deletion("Inventory", "Stock Record Removal")
-            st.rerun()
-        elif not ed_s.equals(st.session_state.stock.iloc[::-1]): 
-            save_data(ed_s.iloc[::-1], STOCK_FILE)
-            log_action("Modified Stock log entries.")
-            st.rerun()
+        if len(ed_s) < len(st.session_state.stock): request_deletion("Inventory", "Stock Record Removal"); st.rerun()
+        elif not ed_s.equals(st.session_state.stock.iloc[::-1]): save_data(ed_s.iloc[::-1], STOCK_FILE); log_action("Modified Stock logs."); st.rerun()
 
 elif page == "Sales":
     st.markdown("<h1>💰 Sales Tracker</h1>", unsafe_allow_html=True)
     conf = {"Product": st.column_config.SelectboxColumn(options=product_list), "Price Tier": st.column_config.SelectboxColumn(options=price_tiers_list)}
     ed = st.data_editor(st.session_state.sales[SALES_ORDER], use_container_width=True, num_rows="dynamic", column_config=conf)
-    if len(ed) < len(st.session_state.sales): 
-        request_deletion("Sales", "Sale Transaction Removal")
-        st.rerun()
-    elif not ed.equals(st.session_state.sales[SALES_ORDER]):
-        save_data(ed, SALES_FILE)
-        log_action("Updated Sales transaction data.")
-        st.rerun()
+    if len(ed) < len(st.session_state.sales): request_deletion("Sales", "Sale Transaction Removal"); st.rerun()
+    elif not ed.equals(st.session_state.sales[SALES_ORDER]): save_data(ed, SALES_FILE); log_action("Updated Sales data."); st.rerun()
 
 elif page == "Expenditures":
     st.markdown("<h1>💸 Expenditures & Deposits</h1>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         st.write("### ➖ Log Expense")
-        it, ct = st.text_input("Item Name"), st.number_input("Expense Cost", min_value=0.0)
-        if st.button("Add Expense"):
-            new = pd.DataFrame({"Date": [date.today()], "Item": [it], "Cost": [ct]})
-            save_data(pd.concat([st.session_state.expenditures, new], ignore_index=True), EXPENSE_FILE)
-            log_action(f"Logged Expense: {it} (₱{ct})")
-            st.rerun()
+        f_ex = st.columns([1, 1.5, 1, 0.4])
+        ex_d = f_ex[0].date_input("Date", date.today(), key="ex_cal")
+        it = f_ex[1].text_input("Item Name", key="ex_it")
+        ct = f_ex[2].number_input("Cost (₱)", min_value=0.0, key="ex_ct")
+        if f_ex[3].button("➕", key="ex_btn"):
+            new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
+            st.session_state.expenditures = pd.concat([st.session_state.expenditures, new], ignore_index=True)
+            save_data(st.session_state.expenditures, EXPENSE_FILE)
+            log_action(f"Expense Logged: {it} (₱{ct}) on {ex_d}"); st.rerun()
     with c2:
         st.write("### ➕ Log Deposit")
-        src, amt = st.text_input("Source Name"), st.number_input("Deposit Amount", min_value=0.0)
-        if st.button("Add Deposit"):
-            new = pd.DataFrame({"Date": [date.today()], "Source": [src], "Amount": [amt]})
-            save_data(pd.concat([st.session_state.cash_in, new], ignore_index=True), CASH_FILE)
-            log_action(f"Logged Deposit: {src} (₱{amt})")
-            st.rerun()
+        f_in = st.columns([1, 1.5, 1, 0.4])
+        in_d = f_in[0].date_input("Date", date.today(), key="in_cal")
+        src = f_in[1].text_input("Source", key="in_src")
+        amt = f_in[2].number_input("Amount (₱)", min_value=0.0, key="in_amt")
+        if f_in[3].button("➕", key="in_btn"):
+            new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
+            st.session_state.cash_in = pd.concat([st.session_state.cash_in, new], ignore_index=True)
+            save_data(st.session_state.cash_in, CASH_FILE)
+            log_action(f"Deposit Logged: {src} (₱{amt}) on {in_d}"); st.rerun()
+    
+    st.write("---")
+    l_c, r_c = st.columns(2)
+    with l_c:
+        st.write("### 📝 Expense Log")
+        v_ex = st.session_state.expenditures.copy().iloc[::-1]
+        ed_ex = st.data_editor(v_ex, use_container_width=True, hide_index=True, num_rows="dynamic", key="ed_ex")
+        if len(ed_ex) < len(v_ex): request_deletion("Expenditures", "Expense Row"); st.rerun()
+        elif not ed_ex.equals(v_ex): save_data(ed_ex.iloc[::-1], EXPENSE_FILE); log_action("Updated Expense Log."); st.rerun()
+    with r_c:
+        st.write("### 📝 Deposit Log")
+        v_in = st.session_state.cash_in.copy().iloc[::-1]
+        ed_in = st.data_editor(v_in, use_container_width=True, hide_index=True, num_rows="dynamic", key="ed_in")
+        if len(ed_in) < len(v_in): request_deletion("Expenditures", "Deposit Row"); st.rerun()
+        elif not ed_in.equals(v_in): save_data(ed_in.iloc[::-1], CASH_FILE); log_action("Updated Deposit Log."); st.rerun()
 
 elif page == "Admin" and st.session_state.role == "Admin":
     st.markdown("<h1>🛡️ Admin Control</h1>", unsafe_allow_html=True)
-    st.write("### 👥 Pending User Approvals")
-    pend_users = users_df[users_df['Status'] == "Pending"]
-    if not pend_users.empty:
-        for idx, row in pend_users.iterrows():
-            col1, col2 = st.columns([3, 1])
-            col1.write(f"Account Request: **{row['Username']}**")
-            if col2.button(f"Approve {row['Username']}"):
-                users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE)
-                log_action(f"Admin approved user: {row['Username']}")
-                st.rerun()
-    else: st.info("No pending user requests.")
-    
+    st.write("### 👥 User Approvals")
+    for idx, row in users_df[users_df['Status'] == "Pending"].iterrows():
+        col1, col2 = st.columns([3, 1])
+        col1.write(f"Account: **{row['Username']}**")
+        if col2.button(f"Approve {row['Username']}"):
+            users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE); log_action(f"Admin approved {row['Username']}"); st.rerun()
     st.write("---")
-    st.write("### 🗑️ Deletion Approval Queue")
-    dq = load_data(APPROVAL_FILE, {})
-    if not dq.empty:
-        st.dataframe(dq, use_container_width=True)
-        if st.button("Clear Deletion Queue"): 
-            save_data(pd.DataFrame(columns=["Timestamp", "User", "Page", "Details"]), APPROVAL_FILE)
-            log_action("Admin cleared the deletion queue.")
-            st.rerun()
-    else: st.info("No pending deletions.")
+    st.write("### 🗑️ Deletion Queue")
+    st.dataframe(load_data(APPROVAL_FILE, {}), use_container_width=True)
+    if st.button("Clear Deletion Queue"): save_data(pd.DataFrame(columns=["Timestamp", "User", "Page", "Details"]), APPROVAL_FILE); st.rerun()
 
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
-    logs = load_data(LOG_FILE, {})
-    st.dataframe(logs, use_container_width=True, hide_index=True)
-    
-    if st.session_state.role == "Admin":
-        st.write("---")
-        if st.button("🗑️ Clear All Logs (Admin Only)"):
-            save_data(pd.DataFrame(columns=["Timestamp", "User", "Action Detail"]), LOG_FILE)
-            log_action("Admin wiped all logs.")
-            st.rerun()
+    st.dataframe(load_data(LOG_FILE, {}), use_container_width=True, hide_index=True)
+    if st.session_state.role == "Admin" and st.button("🗑️ Clear Logs"):
+        save_data(pd.DataFrame(columns=["Timestamp", "User", "Action Detail"]), LOG_FILE); log_action("Logs Wiped."); st.rerun()
