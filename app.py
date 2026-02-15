@@ -69,7 +69,6 @@ st.markdown(f"""
 
 # --- GOOGLE SHEETS SYNC HELPERS ---
 def sync_to_google(df, sheet_name):
-    """Sends dataframe to Google Sheets via Web App URL"""
     try:
         if df is None or df.empty: return False
         df_sync = df.copy()
@@ -87,7 +86,6 @@ def sync_to_google(df, sheet_name):
     except: return False
 
 def fetch_from_google(sheet_name):
-    """Pulls data from Google Sheets"""
     try:
         response = requests.get(f"{GSHEET_API_URL}?sheet={sheet_name}", timeout=10)
         if response.status_code == 200: return pd.DataFrame(response.json().get("data", []))
@@ -139,7 +137,10 @@ if 'last_sync' not in st.session_state: st.session_state.last_sync = "Never"
 users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"], "Status": ["Approved"]})
 db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
 
-# Fix defaults to include Price Value
+# Price Tiers extracted from columns that aren't CORE
+product_list = sorted(db_df["Product Name"].dropna().unique().tolist())
+price_tiers_list = [c for c in db_df.columns if c not in CORE_COLS]
+
 sales_defaults = {c: [] for c in SALES_ORDER}
 for c in ["Qty", "Price Value", "Cost", "Boxed Cost", "Profit", "Discount", "Total"]: sales_defaults[c] = [0.0]
 
@@ -153,9 +154,6 @@ else:
 
 st.session_state.expenditures = load_data(EXPENSE_FILE, {"Date": [], "Item": [], "Cost": []})
 st.session_state.cash_in = load_data(CASH_FILE, {"Date": [], "Source": [], "Amount": []})
-
-product_list = sorted(db_df["Product Name"].dropna().unique().tolist())
-price_tiers_list = [c for c in db_df.columns if c not in CORE_COLS]
 
 # --- AUTHENTICATION ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
@@ -220,12 +218,16 @@ page = st.session_state.current_page
 if page == "Dashboard":
     st.markdown("<h1>📊 Dashboard</h1>", unsafe_allow_html=True)
     with st.container(border=True):
-        f1, f2 = st.columns(2)
+        f1, f2, f3 = st.columns([1, 1, 1])
         dash_sales = st.session_state.sales.copy()
         dash_sales["Date"] = pd.to_datetime(dash_sales["Date"], errors='coerce')
         y_list = sorted(dash_sales["Date"].dt.year.dropna().unique().tolist(), reverse=True)
         if not y_list: y_list = [get_now().year]
-        s_y, s_m = f1.selectbox("Year", y_list), f2.selectbox("Month", ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], index=get_now().month-1)
+        s_y = f1.selectbox("Year", y_list)
+        s_m = f2.selectbox("Month", ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], index=get_now().month-1)
+        
+        # VALUATION TIER SELECTOR Beside Month
+        s_v_tier = f3.selectbox("Valuation Tier", price_tiers_list if price_tiers_list else ["None"])
     
     m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
     fs_monthly = dash_sales[(dash_sales["Date"].dt.year == s_y) & (dash_sales["Date"].dt.month == m_idx)]
@@ -239,17 +241,13 @@ if page == "Dashboard":
     margin = (prof / rev * 100) if rev > 0 else 0
     exp_ratio = (monthly_exp_val / rev * 100) if rev > 0 else 0
 
-    # --- CALCULATE STOCK VALUATION ---
+    # --- STOCK VALUATION CALCULATION ---
     current_stock = st.session_state.stock[st.session_state.stock["Status"] == "In Stock"].groupby("Product Name")["Quantity"].sum().reset_index()
-    val_df = current_stock.merge(db_df, left_on="Product Name", right_on="Product Name", how="left")
+    val_df = current_stock.merge(db_df, on="Product Name", how="left")
     
-    # Value based on Cost per Unit
     total_valuation_cost = (val_df["Quantity"] * val_df["Cost per Unit"].fillna(0)).sum()
-    
-    # Potential sales value based on first Price Tier found
-    first_tier = price_tiers_list[0] if price_tiers_list else None
-    if first_tier:
-        potential_sales_val = (val_df["Quantity"] * val_df[first_tier].fillna(0)).sum()
+    if s_v_tier in val_df.columns:
+        potential_sales_val = (val_df["Quantity"] * val_df[s_v_tier].fillna(0)).sum()
     else:
         potential_sales_val = 0.0
 
@@ -264,8 +262,8 @@ if page == "Dashboard":
 
     st.write("### 📦 Stock Valuation")
     v1, v2 = st.columns(2)
-    v1.metric("Total Stock Value (Cost)", f"₱{total_valuation_cost:,.2f}", help="Total cost of all products currently in stock.")
-    v2.metric("Potential Sales Value", f"₱{potential_sales_val:,.2f}", help=f"Total revenue if all stock sold at {first_tier} tier.")
+    v1.metric("Total Stock Value (Cost)", f"₱{total_valuation_cost:,.2f}", help="Total cost of current inventory.")
+    v2.metric(f"Potential Sales Value ({s_v_tier})", f"₱{potential_sales_val:,.2f}", help=f"Revenue if all current stock is sold at {s_v_tier} price.")
 
     st.write("---")
     c1, c2 = st.columns(2)
@@ -279,16 +277,15 @@ if page == "Dashboard":
             st.table(paid_monthly.groupby("Product")["Qty"].sum().sort_values(ascending=False).head(5))
 
     st.write("---")
-    st.write("### 📈 Monthly Analytics")
     g1, g2 = st.columns(2)
     with g1:
         fig_comp = go.Figure([go.Bar(x=[s_m], y=[prof], name='Profit', marker_color='#2ecc71'), go.Bar(x=[s_m], y=[monthly_exp_val], name='Expenses', marker_color='#e74c3c')])
         fig_comp.update_layout(barmode='group', height=400, template="plotly_dark"); st.plotly_chart(fig_comp, use_container_width=True)
     with g2:
         if not paid_monthly.empty:
-            prod_stats = paid_monthly.groupby("Product").agg({"Total":"sum", "Profit":"sum"}).reset_index()
-            prod_stats["Margin %"] = (prod_stats["Profit"] / prod_stats["Total"] * 100)
-            st.plotly_chart(px.bar(prod_stats, x="Margin %", y="Product", orientation='h', template="plotly_dark", height=400), use_container_width=True)
+            ps = paid_monthly.groupby("Product").agg({"Total":"sum", "Profit":"sum"}).reset_index()
+            ps["Margin %"] = (ps["Profit"] / ps["Total"] * 100)
+            st.plotly_chart(px.bar(ps, x="Margin %", y="Product", orientation='h', template="plotly_dark", height=400), use_container_width=True)
 
 elif page == "Database":
     st.markdown("<h1>📂 Database</h1>", unsafe_allow_html=True)
@@ -497,10 +494,10 @@ elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
     log_data = load_data(LOG_FILE, {})
     
-    # --- DETAILED FILTER BY USER ---
+    # --- DETAILED FILTER BY USER (Regex-safe fix) ---
     if not log_data.empty:
-        # Extract usernames from the "Identity" column e.g. "Musika (Admin)" -> "Musika"
-        log_data['User'] = log_data['Identity'].str.split(' (').str[0]
+        # regex=False ensures '(' is treated as text, not a regex pattern
+        log_data['User'] = log_data['Identity'].str.split(' (', regex=False).str[0]
         user_list = ["All Users"] + sorted(log_data['User'].unique().tolist())
         selected_user = st.selectbox("Filter Logs by Staff Member", user_list)
         
