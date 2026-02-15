@@ -39,10 +39,10 @@ CORE_COLS = ["Product Name"] + EXPENSE_COLS
 
 if not os.path.exists("backups"): os.makedirs("backups")
 
-# Column Order
-SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Price Value", "Cost", "Boxed Cost", "Profit", "Discount", "Total", "Status", "Payment"]
+# REORDERED: Price Value is now between Boxed Cost and Profit
+SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Cost", "Boxed Cost", "Price Value", "Profit", "Discount", "Total", "Status", "Payment"]
 
-# --- DYNAMIC CSS ---
+# --- DYNAMIC CSS (MAXIMIZED & CLEAN) ---
 st.markdown(f"""
     <style>
     html, body, [class*="ViewContainer"] {{ font-size: 12px !important; }}
@@ -89,7 +89,7 @@ def load_data(file, defaults):
     if os.path.exists(file) and os.path.getsize(file) > 0:
         try:
             df = pd.read_csv(file)
-            # SAFETY: Check for missing columns and add them
+            # SAFETY: Ensure "Price Value" and other missing columns are injected immediately
             for col in defaults.keys():
                 if col not in df.columns:
                     df[col] = 0.0 if isinstance(defaults[col][0], (int, float)) else ""
@@ -127,7 +127,6 @@ if 'last_sync' not in st.session_state: st.session_state.last_sync = "Never"
 users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"], "Status": ["Approved"]})
 db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
 
-# Updated Sales defaults with Price Value to prevent KeyError
 sales_defaults = {c: [] for c in SALES_ORDER}
 for c in ["Qty", "Price Value", "Cost", "Boxed Cost", "Profit", "Discount", "Total"]: sales_defaults[c] = [0.0]
 
@@ -159,8 +158,7 @@ if not st.session_state.logged_in:
             u = st.text_input("Username")
             p = st.text_input("Password", type="password")
             rem = st.checkbox("Remember Me")
-            login_submit = st.form_submit_button("Login")
-            if login_submit:
+            if st.form_submit_button("Login"):
                 res = users_df[users_df['Username'] == u]
                 if not res.empty and check_hashes(p, res.iloc[0]['Password']):
                     if res.iloc[0]['Status'] == "Approved":
@@ -179,7 +177,7 @@ if not st.session_state.logged_in:
                 st.success("Request sent to Musika.")
     st.stop()
 
-# --- SIDEBAR ---
+# --- SIDEBAR & NOTIFICATIONS ---
 with st.sidebar:
     st.markdown(f"👤 **{st.session_state.user}** ({st.session_state.role})")
     if st.button("📊 Dashboard"): st.session_state.current_page = "Dashboard"
@@ -297,21 +295,18 @@ elif page == "Sales":
         "Price Tier": st.column_config.SelectboxColumn("Price Tier", options=price_tiers_list),
         "Status": st.column_config.SelectboxColumn("Status", options=["Pending", "Sold", "Cancelled"]),
         "Payment": st.column_config.SelectboxColumn("Payment", options=["Unpaid", "Paid"]),
-        "Price Value": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
         "Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
         "Boxed Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
+        "Price Value": st.column_config.NumberColumn(disabled=True, format="₱%.2f"), # Column Position Check
         "Profit": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
         "Total": st.column_config.NumberColumn(disabled=True, format="₱%.2f")
     }
-    view = st.session_state.sales.copy().iloc[::-1]
-    
-    # SAFETY: Convert numeric columns ensuring they exist
+    view = st.session_state.sales[SALES_ORDER].copy().iloc[::-1] # Force Order via SALES_ORDER list
     num_cols = ["Qty", "Discount", "Price Value", "Cost", "Boxed Cost", "Profit", "Total"]
     for c in num_cols:
-        if c in view.columns:
-            view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
+        if c in view.columns: view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
 
-    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_editor_v28", height=600)
+    ed_sales = st.data_editor(view, use_container_width=True, hide_index=True, num_rows="dynamic", column_config=conf, key="sales_editor_v29", height=600)
     
     if not ed_sales.equals(view):
         ndf = ed_sales.copy()
@@ -326,7 +321,6 @@ elif page == "Sales":
                     qty, disc = float(row["Qty"]), float(row["Discount"])
                     tot, prf = (u_p - disc) * qty, ((u_p - disc) * qty) - (b_c * qty)
                     ndf.at[idx, "Price Value"], ndf.at[idx, "Cost"], ndf.at[idx, "Boxed Cost"], ndf.at[idx, "Total"], ndf.at[idx, "Profit"] = u_p, u_c, b_c, tot, prf
-            
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
                 s_df = st.session_state.stock.copy()
                 mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
@@ -336,7 +330,6 @@ elif page == "Sales":
                     take = min(needed, s_df.at[s_idx, "Quantity"])
                     s_df.at[s_idx, "Quantity"] -= take; needed -= take
                 st.session_state.stock = s_df; save_data(s_df, STOCK_FILE, sync_name="Inventory")
-
         save_data(ndf.iloc[::-1], SALES_FILE, sync_name="Sales"); st.session_state.sales = ndf.iloc[::-1]; st.rerun()
 
 elif page == "Expenditures":
@@ -346,14 +339,12 @@ elif page == "Expenditures":
         ex_d, it, ct = st.date_input("Ex Date"), st.text_input("Ex Item"), st.number_input("Ex Cost", min_value=0.0)
         if st.button("Add Expense", key="ex_btn"):
             new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
-            st.session_state.expenditures = pd.concat([st.session_state.expenditures, new])
-            save_data(st.session_state.expenditures, EXPENSE_FILE, sync_name="Expenses"); st.rerun()
+            st.session_state.expenditures = pd.concat([st.session_state.expenditures, new]); save_data(st.session_state.expenditures, EXPENSE_FILE, sync_name="Expenses"); st.rerun()
     with c2:
         in_d, src, amt = st.date_input("Dep Date"), st.text_input("Dep Source"), st.number_input("Dep Amount", min_value=0.0)
         if st.button("Add Deposit", key="dep_btn"):
             new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
-            st.session_state.cash_in = pd.concat([st.session_state.cash_in, new])
-            save_data(st.session_state.cash_in, CASH_FILE, sync_name="CashIn"); st.rerun()
+            st.session_state.cash_in = pd.concat([st.session_state.cash_in, new]); save_data(st.session_state.cash_in, CASH_FILE, sync_name="CashIn"); st.rerun()
     l, r = st.columns(2)
     with l:
         ed_ex = st.data_editor(st.session_state.expenditures.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
@@ -373,8 +364,7 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 c1.write(f"User: **{row['Username']}**")
                 if c2.button(f"Approve", key=f"app_{row['Username']}"):
                     users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
-                if c3.button(f"Reject", key=f"rej_{row['Username']}"):
-                    save_data(users_df.drop(idx), USERS_FILE, sync_name="Users"); st.rerun()
+                if c3.button(f"Reject", key=f"rej_{row['Username']}"): save_data(users_df.drop(idx), USERS_FILE, sync_name="Users"); st.rerun()
     with t2:
         approved = users_df[users_df['Status'] == "Approved"]
         for idx, row in approved.iterrows():
@@ -389,7 +379,7 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 st.write(f"**{row['Page']}** | {row['User']}"); st.code(row['Details'])
                 if st.button("Confirm", key=f"c_{idx}"): reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
     with t4:
-        st.write("### ☁️ Google Sheets Control Hub"); col1, col2 = st.columns(2)
+        st.write("### ☁️ Google Sheets Hub"); col1, col2 = st.columns(2)
         with col1:
             if st.button("🚀 Push All Data to Google Sheets"):
                 with st.spinner("Syncing..."):
