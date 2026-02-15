@@ -60,6 +60,7 @@ def sync_to_google(df, sheet_name):
     try:
         if df is None or df.empty:
             return False
+        # Convert dates to string for JSON compatibility and fill NaNs
         df_sync = df.copy()
         for col in df_sync.columns:
             if pd.api.types.is_datetime64_any_dtype(df_sync[col]) or pd.api.types.is_extension_array_dtype(df_sync[col]):
@@ -68,7 +69,7 @@ def sync_to_google(df, sheet_name):
         
         data = df_sync.to_dict(orient='records')
         payload = {"sheet": sheet_name, "data": data, "action": "update"}
-        response = requests.post(GSHEET_API_URL, json=payload, timeout=8)
+        response = requests.post(GSHEET_API_URL, json=payload, timeout=15)
         
         if response.status_code == 200:
             st.session_state.last_sync = datetime.now().strftime("%I:%M:%S %p")
@@ -78,7 +79,7 @@ def sync_to_google(df, sheet_name):
         pass 
 
 def fetch_from_google(sheet_name):
-    """Pulls data from Google Sheets"""
+    """Pulls data from Google Sheets (Requires GET handling in Apps Script)"""
     try:
         response = requests.get(f"{GSHEET_API_URL}?sheet={sheet_name}", timeout=10)
         if response.status_code == 200:
@@ -156,17 +157,22 @@ if not st.session_state.logged_in:
     st.markdown("<h1>🔐 Inventory Pro</h1>", unsafe_allow_html=True)
     t1, t2 = st.tabs(["Login", "Request Access"])
     with t1:
-        u, p = st.text_input("Username"), st.text_input("Password", type="password")
-        rem = st.checkbox("Remember Me")
-        if st.button("Login"):
-            res = users_df[users_df['Username'] == u]
-            if not res.empty and check_hashes(p, res.iloc[0]['Password']):
-                if res.iloc[0]['Status'] == "Approved":
-                    st.session_state.logged_in, st.session_state.user, st.session_state.role = True, u, res.iloc[0]['Role']
-                    if rem: cookie_manager.set("inv_pro_user", u, expires_at=datetime.now().replace(year=datetime.now().year + 1))
-                    log_action("Logged in."); st.rerun()
-                else: st.error("Account pending approval.")
-            else: st.error("Invalid credentials.")
+        # Wrap in form to enable Enter key for submission
+        with st.form("login_form", clear_on_submit=False):
+            u = st.text_input("Username")
+            p = st.text_input("Password", type="password")
+            rem = st.checkbox("Remember Me")
+            login_submit = st.form_submit_button("Login")
+            
+            if login_submit:
+                res = users_df[users_df['Username'] == u]
+                if not res.empty and check_hashes(p, res.iloc[0]['Password']):
+                    if res.iloc[0]['Status'] == "Approved":
+                        st.session_state.logged_in, st.session_state.user, st.session_state.role = True, u, res.iloc[0]['Role']
+                        if rem: cookie_manager.set("inv_pro_user", u, expires_at=datetime.now().replace(year=datetime.now().year + 1))
+                        log_action("Logged in."); st.rerun()
+                    else: st.error("Account pending approval.")
+                else: st.error("Invalid credentials.")
     with t2:
         nu, np = st.text_input("New Username"), st.text_input("New Password", type="password")
         if st.button("Submit Request"):
@@ -215,7 +221,7 @@ if page == "Dashboard":
     m_idx = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].index(s_m)+1
     fs_monthly = dash_sales[(dash_sales["Date"].dt.year == s_y) & (dash_sales["Date"].dt.month == m_idx)]
     
-    # FILTER: ONLY POSITIVE PROFITS
+    # FILTER: ONLY POSITIVE PROFITS FOR METRICS
     paid_monthly = fs_monthly[(fs_monthly['Payment'] == 'Paid') & (fs_monthly['Profit'] > 0)]
     
     exp_df = st.session_state.expenditures.copy()
@@ -272,8 +278,8 @@ elif page == "Database":
             db_df[nt] = 0.0; save_data(db_df, DB_FILE, sync_name="Database"); log_action(f"Added Tier: '{nt}'"); st.rerun()
     with c2:
         td = st.selectbox("Select Tier to Remove", [""] + price_tiers_list)
-        if st.button("Delete Tier"):
-            if td: db_df = db_df.drop(columns=[td]); save_data(db_df, DB_FILE, sync_name="Database"); st.rerun()
+        if st.button("Delete Tier") and td:
+            db_df = db_df.drop(columns=[td]); save_data(db_df, DB_FILE, sync_name="Database"); st.rerun()
     
     ed_db = st.data_editor(db_df, use_container_width=True, hide_index=True, num_rows="dynamic", height=600)
     if not ed_db.equals(db_df):
@@ -395,22 +401,24 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 if c2.button(f"Approve", key=f"app_{row['Username']}"):
                     users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
                 if c3.button(f"Reject", key=f"rej_{row['Username']}"):
-                    save_data(users_df.drop(idx), USERS_FILE, sync_name="Users"); st.rerun()
+                    users_df = users_df.drop(idx); save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
     with t2:
         approved = users_df[users_df['Status'] == "Approved"]
         for idx, row in approved.iterrows():
             with st.container(border=True):
                 c1, c2 = st.columns([2, 2])
                 c1.write(f"User: **{row['Username']}**")
-                nr = c2.selectbox("Role", ["Staff", "Admin"], index=0 if row['Role'] == "Staff" else 1, key=f"rl_{row['Username']}")
+                nr = c2.selectbox("Role", ["Staff", "Admin"], index=0 if row['Role'] == "Staff" else 1, key=f"role_{row['Username']}")
                 if nr != row['Role']:
                     users_df.at[idx, 'Role'] = nr; save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
     with t3:
-        reqs = load_data(APPROVAL_FILE, {"Details": []})
+        reqs = load_data(APPROVAL_FILE, {"Request Date": [], "User": [], "Page": [], "Details": [], "RawData": []})
         for idx, row in reqs.iterrows():
             with st.container(border=True):
-                st.write(row['Details']); 
-                if st.button("Confirm", key=f"cd_{idx}"): save_data(reqs.drop(idx), APPROVAL_FILE); st.rerun()
+                st.write(f"**{row['Page']}** | {row['User']}")
+                st.code(row['Details'])
+                if st.button("Confirm", key=f"c_{idx}"):
+                    reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
 
     with t4:
         st.write("### ☁️ Google Sheets Control Hub")
