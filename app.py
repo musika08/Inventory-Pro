@@ -239,21 +239,47 @@ if page == "Dashboard":
     margin = (prof / rev * 100) if rev > 0 else 0
     exp_ratio = (monthly_exp_val / rev * 100) if rev > 0 else 0
 
+    # --- CALCULATE STOCK VALUATION ---
+    current_stock = st.session_state.stock[st.session_state.stock["Status"] == "In Stock"].groupby("Product Name")["Quantity"].sum().reset_index()
+    val_df = current_stock.merge(db_df, left_on="Product Name", right_on="Product Name", how="left")
+    
+    # Value based on Cost per Unit
+    total_valuation_cost = (val_df["Quantity"] * val_df["Cost per Unit"].fillna(0)).sum()
+    
+    # Potential sales value based on first Price Tier found
+    first_tier = price_tiers_list[0] if price_tiers_list else None
+    if first_tier:
+        potential_sales_val = (val_df["Quantity"] * val_df[first_tier].fillna(0)).sum()
+    else:
+        potential_sales_val = 0.0
+
+    st.write("### 💎 Financial Overview")
     m1, m2, m3, m4 = st.columns(4)
     total_paid_rev = dash_sales[dash_sales['Payment'] == 'Paid']['Total'].sum()
     net_cash = (st.session_state.cash_in['Amount'].sum() + total_paid_rev) - st.session_state.expenditures['Cost'].sum()
-    m1.metric("Total Net Money", f"₱{net_cash:,.2f}"); m2.metric("Monthly Paid Profit", f"₱{prof:,.2f}")
-    m3.metric("Profit Margin %", f"{margin:.1f}%"); m4.metric("Expense Ratio", f"{exp_ratio:.1f}%")
+    m1.metric("Total Net Money (Cash)", f"₱{net_cash:,.2f}")
+    m2.metric("Monthly Paid Profit", f"₱{prof:,.2f}")
+    m3.metric("Profit Margin %", f"{margin:.1f}%")
+    m4.metric("Expense Ratio", f"{exp_ratio:.1f}%")
+
+    st.write("### 📦 Stock Valuation")
+    v1, v2 = st.columns(2)
+    v1.metric("Total Stock Value (Cost)", f"₱{total_valuation_cost:,.2f}", help="Total cost of all products currently in stock.")
+    v2.metric("Potential Sales Value", f"₱{potential_sales_val:,.2f}", help=f"Total revenue if all stock sold at {first_tier} tier.")
 
     st.write("---")
     c1, c2 = st.columns(2)
     with c1:
-        sdf = st.session_state.stock[st.session_state.stock["Status"] == "In Stock"].groupby("Product Name")["Quantity"].sum().reset_index()
-        st.dataframe(sdf[sdf["Quantity"] < 5].sort_values("Quantity"), use_container_width=True, hide_index=True)
+        st.write("### 🚨 Stock Alerts")
+        alerts = current_stock[current_stock["Quantity"] < 5].sort_values("Quantity")
+        st.dataframe(alerts, use_container_width=True, hide_index=True)
     with c2:
-        if not paid_monthly.empty: st.table(paid_monthly.groupby("Product")["Qty"].sum().sort_values(ascending=False).head(5))
+        if not paid_monthly.empty: 
+            st.write("### 🏆 Top Sellers (Paid)")
+            st.table(paid_monthly.groupby("Product")["Qty"].sum().sort_values(ascending=False).head(5))
 
     st.write("---")
+    st.write("### 📈 Monthly Analytics")
     g1, g2 = st.columns(2)
     with g1:
         fig_comp = go.Figure([go.Bar(x=[s_m], y=[prof], name='Profit', marker_color='#2ecc71'), go.Bar(x=[s_m], y=[monthly_exp_val], name='Expenses', marker_color='#e74c3c')])
@@ -320,7 +346,7 @@ elif page == "Sales":
                 new_row = pd.DataFrame([{"Date": s_date, "Customer": s_cust, "Product": s_prod, "Qty": s_qty, "Price Tier": s_tier, "Price Value": u_p, "Cost": u_c, "Boxed Cost": b_c, "Profit": calc_tot - (b_c * s_qty), "Discount": 0.0, "Total": calc_tot, "Status": "Pending", "Payment": "Unpaid"}])
                 st.session_state.sales = pd.concat([st.session_state.sales, new_row], ignore_index=True)
                 save_data(st.session_state.sales, SALES_FILE, sync_name="Sales")
-                log_action(f"Sales: New sale for '{s_cust}' - {s_qty}x '{s_prod}' at '{s_tier}'.")
+                log_action(f"Sales: Recorded new sale for customer '{s_cust}' - {s_qty}x '{s_prod}'.")
                 st.rerun()
 
     conf = {
@@ -354,9 +380,9 @@ elif page == "Sales":
             
             if old_row is not None:
                 if row["Status"] != old_row["Status"]:
-                    log_action(f"Sales: Customer '{row['Customer']}' order status changed from '{old_row['Status']}' to '{row['Status']}'.")
+                    log_action(f"Sales: Customer '{row['Customer']}' status updated to '{row['Status']}'.")
                 if row["Payment"] != old_row["Payment"]:
-                    log_action(f"Sales: Customer '{row['Customer']}' payment status changed from '{old_row['Payment']}' to '{row['Payment']}'.")
+                    log_action(f"Sales: Customer '{row['Customer']}' payment updated to '{row['Payment']}'.")
 
             if prod and tier:
                 match = db_df[db_df["Product Name"] == prod]
@@ -365,6 +391,7 @@ elif page == "Sales":
                     qty, disc = float(row["Qty"]), float(row["Discount"])
                     tot, prf = (u_p - disc) * qty, ((u_p - disc) * qty) - (b_c * qty)
                     ndf.at[idx, "Price Value"], ndf.at[idx, "Cost"], ndf.at[idx, "Boxed Cost"], ndf.at[idx, "Total"], ndf.at[idx, "Profit"] = u_p, u_c, b_c, tot, prf
+            
             if old_row is not None and row["Status"] == "Sold" and old_row["Status"] != "Sold":
                 s_df = st.session_state.stock.copy()
                 mask = (s_df["Product Name"] == prod) & (s_df["Status"] == "In Stock") & (s_df["Quantity"] > 0)
@@ -374,7 +401,7 @@ elif page == "Sales":
                     take = min(needed, s_df.at[s_idx, "Quantity"])
                     s_df.at[s_idx, "Quantity"] -= take; needed -= take
                 st.session_state.stock = s_df; save_data(s_df, STOCK_FILE, sync_name="Inventory")
-                log_action(f"Inventory: Auto-subtracted {row['Qty']} units of '{prod}' due to 'Sold' status.")
+                log_action(f"Inventory: Subtracted {row['Qty']} units of '{prod}' (Sold).")
 
         save_data(ndf.iloc[::-1], SALES_FILE, sync_name="Sales"); st.session_state.sales = ndf.iloc[::-1]; st.rerun()
 
@@ -385,28 +412,31 @@ elif page == "Expenditures":
         ex_d, it, ct = st.date_input("Ex Date"), st.text_input("Ex Item"), st.number_input("Ex Cost", min_value=0.0)
         if st.button("Add Expense", key="ex_btn"):
             new = pd.DataFrame({"Date": [ex_d], "Item": [it], "Cost": [ct]})
-            st.session_state.expenditures = pd.concat([st.session_state.expenditures, new]); save_data(st.session_state.expenditures, EXPENSE_FILE, sync_name="Expenses")
-            log_action(f"Expenses: Logged new expense for '{it}' (₱{ct:,.2f}).")
+            st.session_state.expenditures = pd.concat([st.session_state.expenditures, new])
+            save_data(st.session_state.expenditures, EXPENSE_FILE, sync_name="Expenses")
+            log_action(f"Expenses: Logged '{it}' (₱{ct:,.2f}).")
             st.rerun()
     with c2:
         in_d, src, amt = st.date_input("Dep Date"), st.text_input("Dep Source"), st.number_input("Dep Amount", min_value=0.0)
         if st.button("Add Deposit", key="dep_btn"):
             new = pd.DataFrame({"Date": [in_d], "Source": [src], "Amount": [amt]})
-            st.session_state.cash_in = pd.concat([st.session_state.cash_in, new]); save_data(st.session_state.cash_in, CASH_FILE, sync_name="CashIn")
-            log_action(f"CashIn: Logged new deposit from '{src}' (₱{amt:,.2f}).")
+            st.session_state.cash_in = pd.concat([st.session_state.cash_in, new])
+            save_data(st.session_state.cash_in, CASH_FILE, sync_name="CashIn")
+            log_action(f"CashIn: Logged deposit from '{src}' (₱{amt:,.2f}).")
             st.rerun()
+    
     l, r = st.columns(2)
     with l:
         ed_ex = st.data_editor(st.session_state.expenditures.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
         if not ed_ex.equals(st.session_state.expenditures.iloc[::-1]): 
             save_data(ed_ex.iloc[::-1], EXPENSE_FILE, sync_name="Expenses")
-            log_action("Expenses: Manually modified expenditure history.")
+            log_action("Expenses: Records manually modified.")
             st.rerun()
     with r:
         ed_in = st.data_editor(st.session_state.cash_in.copy().iloc[::-1], use_container_width=True, hide_index=True, num_rows="dynamic", height=500)
         if not ed_in.equals(st.session_state.cash_in.iloc[::-1]): 
             save_data(ed_in.iloc[::-1], CASH_FILE, sync_name="CashIn")
-            log_action("CashIn: Manually modified deposit history.")
+            log_action("CashIn: Records manually modified.")
             st.rerun()
 
 elif page == "Admin" and st.session_state.role == "Admin":
@@ -420,11 +450,11 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 c1.write(f"User: **{row['Username']}**")
                 if c2.button(f"Approve", key=f"app_{row['Username']}"):
                     users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE, sync_name="Users")
-                    log_action(f"Admin: Approved access for user '{row['Username']}'.")
+                    log_action(f"Admin: Approved access for '{row['Username']}'.")
                     st.rerun()
                 if c3.button(f"Reject", key=f"rej_{row['Username']}"):
                     save_data(users_df.drop(idx), USERS_FILE, sync_name="Users")
-                    log_action(f"Admin: Rejected access for user '{row['Username']}'.")
+                    log_action(f"Admin: Rejected access for '{row['Username']}'.")
                     st.rerun()
     with t2:
         approved = users_df[users_df['Status'] == "Approved"]
@@ -434,15 +464,15 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 nr = c2.selectbox("Role", ["Staff", "Admin"], index=0 if row['Role'] == "Staff" else 1, key=f"role_{row['Username']}")
                 if nr != row['Role']: 
                     users_df.at[idx, 'Role'] = nr; save_data(users_df, USERS_FILE, sync_name="Users")
-                    log_action(f"Admin: Changed user '{row['Username']}' role to {nr}.")
+                    log_action(f"Admin: Changed user '{row['Username']}' to {nr}.")
                     st.rerun()
     with t3:
-        reqs = load_data(APPROVAL_FILE, {"Request Date": [], "User": [], "Page": [], "Details": [], "RawData": []})
+        reqs = load_data(APPROVAL_FILE, {"Details": []})
         for idx, row in reqs.iterrows():
             with st.container(border=True):
-                st.write(f"**{row['Page']}** | {row['User']}"); st.code(row['Details'])
-                if st.button("Confirm", key=f"c_{idx}"):
-                    log_action(f"Admin: Confirmed data deletion from {row['Page']}.")
+                st.write(row['Details']); 
+                if st.button("Confirm", key=f"cd_{idx}"):
+                    log_action("Admin: Confirmed manual data deletion.")
                     reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
     with t4:
         st.write("### ☁️ Google Sheets Control Hub"); col1, col2 = st.columns(2)
@@ -452,7 +482,7 @@ elif page == "Admin" and st.session_state.role == "Admin":
                     sync_to_google(st.session_state.inventory, "Database"); sync_to_google(st.session_state.stock, "Inventory")
                     sync_to_google(st.session_state.sales, "Sales"); sync_to_google(st.session_state.expenditures, "Expenses")
                     sync_to_google(st.session_state.cash_in, "CashIn"); sync_to_google(users_df, "Users")
-                    log_action("Admin: Triggered full manual Cloud Backup.")
+                    log_action("Admin: Performed full Cloud Backup.")
                     st.success("Cloud Backup Complete!")
         with col2:
             if st.button("📥 Pull Data from Google Sheets"):
@@ -460,23 +490,33 @@ elif page == "Admin" and st.session_state.role == "Admin":
                     for f, s in [(DB_FILE, "Database"), (STOCK_FILE, "Inventory"), (SALES_FILE, "Sales"), (EXPENSE_FILE, "Expenses"), (CASH_FILE, "CashIn")]:
                         pulled = fetch_from_google(s)
                         if pulled is not None: save_data(pulled, f)
-                    log_action("Admin: Triggered full manual Cloud Restoration.")
+                    log_action("Admin: Performed full Cloud Restoration.")
                     st.success("Cloud Restore Complete!"); st.rerun()
 
 elif page == "Log":
     st.markdown("<h1>📜 Activity Log</h1>", unsafe_allow_html=True)
-    
-    # Detailed Log View
     log_data = load_data(LOG_FILE, {})
-    st.dataframe(log_data, use_container_width=True, hide_index=True, height=700)
     
-    # Admin Only: Clear Log
+    # --- DETAILED FILTER BY USER ---
+    if not log_data.empty:
+        # Extract usernames from the "Identity" column e.g. "Musika (Admin)" -> "Musika"
+        log_data['User'] = log_data['Identity'].str.split(' (').str[0]
+        user_list = ["All Users"] + sorted(log_data['User'].unique().tolist())
+        selected_user = st.selectbox("Filter Logs by Staff Member", user_list)
+        
+        if selected_user != "All Users":
+            display_data = log_data[log_data['User'] == selected_user].drop(columns=['User'])
+        else:
+            display_data = log_data.drop(columns=['User'])
+    else:
+        display_data = log_data
+
+    st.dataframe(display_data, use_container_width=True, hide_index=True, height=700)
+    
     if st.session_state.role == "Admin":
         st.write("---")
         if st.button("⚠️ Clear Activity Log (Admin Only)"):
-            empty_log = pd.DataFrame(columns=["Timestamp", "Identity", "Action Detail"])
-            save_data(empty_log, LOG_FILE, sync_name="Logs")
-            # Log the clearing itself
-            log_action("Admin: Cleared all activity log history.")
+            save_data(pd.DataFrame(columns=["Timestamp", "Identity", "Action Detail"]), LOG_FILE, sync_name="Logs")
+            log_action("Admin: Purged all history from activity logs.")
             st.success("Log history cleared.")
             st.rerun()
