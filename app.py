@@ -39,7 +39,7 @@ CORE_COLS = ["Product Name"] + EXPENSE_COLS
 
 if not os.path.exists("backups"): os.makedirs("backups")
 
-# REORDERED: Price Value is now between Boxed Cost and Profit
+# Column Order
 SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Cost", "Boxed Cost", "Price Value", "Profit", "Discount", "Total", "Status", "Payment"]
 
 # --- DYNAMIC CSS (MAXIMIZED & CLEAN) ---
@@ -127,6 +127,7 @@ if 'last_sync' not in st.session_state: st.session_state.last_sync = "Never"
 users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"], "Status": ["Approved"]})
 db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
 
+# Fix defaults to include Price Value
 sales_defaults = {c: [] for c in SALES_ORDER}
 for c in ["Qty", "Price Value", "Cost", "Boxed Cost", "Profit", "Discount", "Total"]: sales_defaults[c] = [0.0]
 
@@ -134,6 +135,11 @@ st.session_state.inventory = db_df
 st.session_state.stock = load_data(STOCK_FILE, {"Product Name": ["Item 1"], "Quantity": [0], "Status": ["In Stock"], "Date": [date.today()]})
 if 'sales' not in st.session_state:
     st.session_state.sales = load_data(SALES_FILE, sales_defaults)
+else:
+    # Ensure "Price Value" is in the session state dataframe if it loaded from a file missing it
+    if "Price Value" not in st.session_state.sales.columns:
+        st.session_state.sales["Price Value"] = 0.0
+
 st.session_state.expenditures = load_data(EXPENSE_FILE, {"Date": [], "Item": [], "Cost": []})
 st.session_state.cash_in = load_data(CASH_FILE, {"Date": [], "Source": [], "Amount": []})
 
@@ -297,11 +303,16 @@ elif page == "Sales":
         "Payment": st.column_config.SelectboxColumn("Payment", options=["Unpaid", "Paid"]),
         "Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
         "Boxed Cost": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
-        "Price Value": st.column_config.NumberColumn(disabled=True, format="₱%.2f"), # Column Position Check
+        "Price Value": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
         "Profit": st.column_config.NumberColumn(disabled=True, format="₱%.2f"),
         "Total": st.column_config.NumberColumn(disabled=True, format="₱%.2f")
     }
-    view = st.session_state.sales[SALES_ORDER].copy().iloc[::-1] # Force Order via SALES_ORDER list
+    
+    # SAFETY: Only reorder if all columns in SALES_ORDER actually exist in the dataframe
+    current_cols = st.session_state.sales.columns.tolist()
+    valid_order = [c for c in SALES_ORDER if c in current_cols]
+    
+    view = st.session_state.sales[valid_order].copy().iloc[::-1]
     num_cols = ["Qty", "Discount", "Price Value", "Cost", "Boxed Cost", "Profit", "Total"]
     for c in num_cols:
         if c in view.columns: view[c] = pd.to_numeric(view[c], errors='coerce').fillna(0.0)
@@ -364,7 +375,8 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 c1.write(f"User: **{row['Username']}**")
                 if c2.button(f"Approve", key=f"app_{row['Username']}"):
                     users_df.at[idx, 'Status'] = "Approved"; save_data(users_df, USERS_FILE, sync_name="Users"); st.rerun()
-                if c3.button(f"Reject", key=f"rej_{row['Username']}"): save_data(users_df.drop(idx), USERS_FILE, sync_name="Users"); st.rerun()
+                if c3.button(f"Reject", key=f"rej_{row['Username']}"):
+                    save_data(users_df.drop(idx), USERS_FILE, sync_name="Users"); st.rerun()
     with t2:
         approved = users_df[users_df['Status'] == "Approved"]
         for idx, row in approved.iterrows():
@@ -379,7 +391,7 @@ elif page == "Admin" and st.session_state.role == "Admin":
                 st.write(f"**{row['Page']}** | {row['User']}"); st.code(row['Details'])
                 if st.button("Confirm", key=f"c_{idx}"): reqs = reqs.drop(idx); save_data(reqs, APPROVAL_FILE); st.rerun()
     with t4:
-        st.write("### ☁️ Google Sheets Hub"); col1, col2 = st.columns(2)
+        st.write("### ☁️ Google Sheets Control Hub"); col1, col2 = st.columns(2)
         with col1:
             if st.button("🚀 Push All Data to Google Sheets"):
                 with st.spinner("Syncing..."):
