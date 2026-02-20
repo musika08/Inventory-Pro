@@ -51,10 +51,9 @@ CORE_COLS = ["Product Name"] + EXPENSE_COLS
 
 if not os.path.exists("backups"): os.makedirs("backups")
 
-# Column Order
 SALES_ORDER = ["Date", "Customer", "Product", "Qty", "Price Tier", "Cost", "Boxed Cost", "Price Value", "Profit", "Discount", "Total", "Status", "Payment"]
 
-# --- DYNAMIC CSS (MAXIMIZED & CLEAN) ---
+# --- DYNAMIC CSS ---
 st.markdown(f"""
     <style>
     html, body, [class*="ViewContainer"] {{ font-size: 12px !important; }}
@@ -129,20 +128,30 @@ def log_action(action_detail):
 # --- INITIALIZATION ---
 if 'last_sync' not in st.session_state: st.session_state.last_sync = "Never"
 
-# RECOVERY ACCOUNT DEFINED HERE
-users_df = load_data(USERS_FILE, {"Username": ["Musika"], "Password": [make_hashes("Iameternal11!")], "Role": ["Admin"], "Status": ["Approved"]})
-db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
+# USER DB INITIALIZATION WITH FAIL-SAFE "ACCOUNT" CREDENTIALS
+default_users = {
+    "Username": ["Musika", "account"], 
+    "Password": [make_hashes("Iameternal11!"), make_hashes("account")], 
+    "Role": ["Admin", "Admin"], 
+    "Status": ["Approved", "Approved"]
+}
+users_df = load_data(USERS_FILE, default_users)
 
+# Double check that 'account' exists in the loaded dataframe
+if "account" not in users_df["Username"].values:
+    new_admin = pd.DataFrame({"Username": ["account"], "Password": [make_hashes("account")], "Role": ["Admin"], "Status": ["Approved"]})
+    users_df = pd.concat([users_df, new_admin], ignore_index=True)
+    save_data(users_df, USERS_FILE)
+
+db_df = load_data(DB_FILE, {"Product Name": ["Item 1"], "Cost per Unit": [0.0], "Boxed Cost": [0.0]})
 product_list = sorted(db_df["Product Name"].dropna().unique().tolist())
 price_tiers_list = [c for c in db_df.columns if c not in CORE_COLS]
-
-sales_init_defaults = {c: [] for c in SALES_ORDER}
 
 st.session_state.inventory = db_df
 st.session_state.stock = load_data(STOCK_FILE, {"Product Name": ["Item 1"], "Quantity": [0], "Status": ["In Stock"], "Date": [get_now().date()]})
 
 if 'sales' not in st.session_state:
-    st.session_state.sales = load_data(SALES_FILE, sales_init_defaults)
+    st.session_state.sales = load_data(SALES_FILE, {c: [] for c in SALES_ORDER})
 else:
     if "Price Value" not in st.session_state.sales.columns:
         st.session_state.sales["Price Value"] = 0.0
@@ -161,7 +170,7 @@ if saved_user and not st.session_state.logged_in:
         st.session_state.logged_in, st.session_state.user, st.session_state.role = True, saved_user, res.iloc[0]['Role']
 
 if not st.session_state.logged_in:
-    st.markdown("<h1>🔐 Inventory Pro</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>🔐 Inventory Pro Login</h1>", unsafe_allow_html=True)
     t1, t2 = st.tabs(["Login", "Request Access"])
     with t1:
         with st.form("login_form", clear_on_submit=False):
@@ -171,7 +180,6 @@ if not st.session_state.logged_in:
             if st.form_submit_button("Login"):
                 res = users_df[users_df['Username'] == u]
                 if not res.empty and check_hashes(p, res.iloc[0]['Password']):
-                    # THIS IS THE CHECK FOR THE STATUS
                     if res.iloc[0]['Status'] == "Approved":
                         st.session_state.logged_in, st.session_state.user, st.session_state.role = True, u, res.iloc[0]['Role']
                         if rem: cookie_manager.set("inv_pro_user", u, expires_at=get_now().replace(year=get_now().year + 1))
@@ -186,7 +194,7 @@ if not st.session_state.logged_in:
             else:
                 new_u = pd.DataFrame({"Username": [nu], "Password": [make_hashes(np)], "Role": ["Staff"], "Status": ["Pending"]})
                 save_data(pd.concat([users_df, new_u], ignore_index=True), USERS_FILE, sync_name="Users")
-                st.success("Request sent to Musika.")
+                st.success("Request sent to Admin.")
     st.stop()
 
 # --- SIDEBAR ---
@@ -200,9 +208,7 @@ with st.sidebar:
     if st.button("📜 Activity Log"): st.session_state.current_page = "Log"
     if st.session_state.role == "Admin": 
         p_users = len(users_df[users_df['Status'] == "Pending"])
-        p_approvals = len(load_data(APPROVAL_FILE, {"Details": []}))
-        total_alert = p_users + p_approvals
-        admin_btn_label = f"🛡️ Admin Page (🚨 {total_alert})" if total_alert > 0 else "🛡️ Admin Page"
+        admin_btn_label = f"🛡️ Admin Page (🚨 {p_users})" if p_users > 0 else "🛡️ Admin Page"
         if st.button(admin_btn_label): st.session_state.current_page = "Admin"
     st.write("---")
     st.write(f"☁️ Cloud Sync: **{st.session_state.last_sync}**")
